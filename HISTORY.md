@@ -24,6 +24,7 @@ New
 
 Fix
 ~~~
+- Restore the shared DNS regression profile so the committed tests compile.
 - Load the Linux CLI's core library beside the executable regardless of the
   working directory.
 - Refuse privileged VPN control service startup when its control secret is

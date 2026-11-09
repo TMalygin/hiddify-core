@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/hiddify/hiddify-core/v2/hcore"
 	"github.com/hiddify/hiddify-core/v2/hcore/adminbg"
+	"github.com/hiddify/hiddify-core/v2/hcore/hprocess"
 	"github.com/kardianos/service"
 	"google.golang.org/grpc"
 )
@@ -24,17 +26,28 @@ var port int = 18020
 
 func allowAdminBgMethod(method string) error {
 	switch method {
-	case HiddifyAdminBG_Start_FullMethodName, HiddifyAdminBG_Stop_FullMethodName,
-		HiddifyAdminBG_Status_FullMethodName, HiddifyAdminBG_Exit_FullMethodName:
+	case HiddifyAdminBG_Start_FullMethodName, HiddifyAdminBG_Reload_FullMethodName, HiddifyAdminBG_Restart_FullMethodName,
+		HiddifyAdminBG_Stop_FullMethodName, HiddifyAdminBG_Status_FullMethodName,
+		HiddifyAdminBG_Exit_FullMethodName:
 		return nil
 	}
 	return adminbg.AllowCoreMethod(method)
+}
+
+// CleanupLeftovers undoes what the service's engine left in the host when it died with the
+// service: the routing of its TUN (see hcore.CleanupLeftovers).
+func CleanupLeftovers() {
+	_, work := fullCoreDirectories()
+	hcore.CleanupLeftovers(work, func(_ hcore.LogLevel, message string) { log.Print(message) })
 }
 
 func (m *hiddifyNext) StartAdminBgGrpcServer(listenAddressG string) (*grpc.Server, error) {
 	if len(m.secret) < adminbg.MinSecretLength {
 		return nil, fmt.Errorf("admin_bgservice requires a valid control secret; reinstall the VPN service")
 	}
+	// an engine killed with the service (a crash, SIGKILL) left its TUN's routing behind: the host
+	// has no network until the app connects again, so undo it before waiting for the app
+	CleanupLeftovers()
 	lis, err := net.Listen("tcp", listenAddressG)
 	if err != nil {
 		log.Printf("failed to listen: %v", err)
@@ -149,7 +162,8 @@ func StartAdminBgService(goArg string) (int, string) {
 		Description:      "Hiddify virtual private network",
 		WorkingDirectory: dataDirectory,
 		Option: map[string]interface{}{
-			"RunAtLoad": true,
+			"RunAtLoad":     true,
+			"SystemdScript": systemdUnit,
 		},
 	}
 
@@ -170,6 +184,8 @@ func StartAdminBgService(goArg string) (int, string) {
 	if err != nil {
 		log.Printf("Error: %v", err)
 	}
+	// the service must not be slowed down as a background job (a launchd job has no ProcessType)
+	hprocess.RaisePriority()
 	err = s.Run()
 	if err != nil {
 		logger.Error(err)
