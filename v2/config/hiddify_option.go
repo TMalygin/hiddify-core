@@ -32,9 +32,17 @@ type HiddifyOptions struct {
 	// §default§ one) or, unset, the balancer.
 	DefaultProxy string `json:"default-proxy,omitempty" overridable:"true"`
 	// KeepTop, when above 0, runs only that many of a profile's proxies, the fastest by their first
-	// pings, once the profile has more (see hcore's keep top); 0 or -1 runs them all. The profile
-	// sets it, from its `keep-top` header or the user's choice.
+	// pings, once the profile has more (see hcore's keep top); KeepTopAnswering runs the ones that
+	// answer their first ping; 0 or -1 runs them all. The profile sets it, from its `keep-top`
+	// header or the user's choice.
 	KeepTop int `json:"keep-top,omitempty" overridable:"true"`
+	// KeepTopQuick lets keep top pick before every proxy has its first ping: once the proxies
+	// still to test were slower in their last ping, and every one without a ping of the last day
+	// has been tested (see hcore's pickTopEarly).
+	KeepTopQuick bool `json:"keep-top-quick,omitempty" overridable:"true"`
+	// KeepTopCountries, when set, keeps only proxies of these countries (two-letter codes), by
+	// where their IP is, else by the flag in their name; with keep-top 0 or -1, all of them.
+	KeepTopCountries []string `json:"keep-top-countries,omitempty"`
 	// KeepTags are the tags of the profile's proxies the user chose to run: while any of them is in
 	// the profile, only those run, whatever KeepTop says; none of them left, KeepTop decides again.
 	KeepTags []string `json:"keep-tags,omitempty"`
@@ -70,13 +78,17 @@ type DNSOptions struct {
 }
 
 type InboundOptions struct {
-	EnableTun        bool   `json:"enable-tun,omitempty"`
-	EnableTunService bool   `json:"enable-tun-service,omitempty"`
-	SetSystemProxy   bool   `json:"set-system-proxy,omitempty"`
-	MixedPort        uint16 `json:"mixed-port,omitempty"`
-	TProxyPort       uint16 `json:"tproxy-port,omitempty"`
-	RedirectPort     uint16 `json:"redirect-port,omitempty"`
-	DirectPort       uint16 `json:"direct-port,omitempty"`
+	EnableTun        bool `json:"enable-tun,omitempty"`
+	EnableTunService bool `json:"enable-tun-service,omitempty"`
+	SetSystemProxy   bool `json:"set-system-proxy,omitempty"`
+	// DelegateSystemProxy is set by a core that runs as root for a user (the admin_bgservice on
+	// Windows and Linux). It cannot reach the user's desktop session, so no inbound sets the system
+	// proxy itself: the address is reported, and the user's own core sets it (SetSystemProxyEnabled).
+	DelegateSystemProxy bool   `json:"delegate-system-proxy,omitempty"`
+	MixedPort           uint16 `json:"mixed-port,omitempty"`
+	TProxyPort          uint16 `json:"tproxy-port,omitempty"`
+	RedirectPort        uint16 `json:"redirect-port,omitempty"`
+	DirectPort          uint16 `json:"direct-port,omitempty"`
 	// Each local port opens only while its switch is on; unset is on for the mixed port, off for the
 	// transparent ones, which serve setups made by hand (see portEnabled).
 	EnableMixedPort    *bool `json:"enable-mixed-port,omitempty"`
@@ -103,6 +115,11 @@ type InboundOptions struct {
 	// AutoRedirect lets a Linux TUN use nftables routing (sing-box auto_redirect) where the process
 	// can; on by default, off only to force the plain TUN. Nothing elsewhere (see AutoRedirectAvailable).
 	AutoRedirect bool `json:"auto-redirect"`
+	// RouterMode makes a Linux router or gateway a transparent proxy for its whole network: the
+	// TUN with auto_redirect takes the TCP, UDP and ICMP the router forwards and its own, and lets
+	// connections from outside (to the router, or port forwarded) and their replies pass. It turns
+	// the TUN on (see forRouterMode).
+	RouterMode bool `json:"router-mode,omitempty"`
 }
 
 type URLTestOptions struct {

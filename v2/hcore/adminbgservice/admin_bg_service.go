@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hiddify/hiddify-core/v2/hcore/hprocess"
+
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/daemon"
 	"github.com/sagernet/sing-box/experimental/libbox"
@@ -78,29 +80,34 @@ func (s *hiddifyAdminBG) startBridge(in *AdminBgStartRequest) (*AdminBgResponse,
 	return &AdminBgResponse{Message: "OK"}, nil
 }
 
-func (s *hiddifyAdminBG) startFullCore(in *AdminBgStartRequest) error {
-	s.closeRunning()
-	dataDirectory := serviceDataDirectory()
-	base := filepath.Join(dataDirectory, "core")
-	work := filepath.Join(base, "work")
+// fullCoreOptions writes the request's resources and returns the engine options for it: the same
+// for a start and a reload, which differ only in how the engine applies them.
+// fullCoreDirectories are the base and working dirs of the engine the service runs.
+func fullCoreDirectories() (base string, work string) {
+	base = filepath.Join(serviceDataDirectory(), "core")
+	return base, filepath.Join(base, "work")
+}
+
+func fullCoreOptions(in *AdminBgStartRequest) (*adminbg.Options, error) {
+	base, work := fullCoreDirectories()
 	temp := filepath.Join(base, "temp")
 	for _, directory := range []string{base, work, temp, filepath.Join(work, "data")} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := writeResources(filepath.Join(work, "resources"), in.GetResources()); err != nil {
-		return err
+		return nil, err
 	}
 	secret, err := LoadControlSecret()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	settings := in.GetSettingsJson()
 	if settings == "" {
 		settings = "{}"
 	}
-	if err := adminbg.Apply(&adminbg.Options{
+	return &adminbg.Options{
 		BasePath:           base,
 		WorkingPath:        work,
 		TempPath:           temp,
@@ -109,14 +116,73 @@ func (s *hiddifyAdminBG) startFullCore(in *AdminBgStartRequest) error {
 		SettingsJSON:       settings,
 		Secret:             secret,
 		DisableMemoryLimit: in.GetDisableMemoryLimit(),
+		ProxyOnly:          in.GetProxyOnly(),
 		NativeTun:          true,
-	}, nil); err != nil {
+	}, nil
+}
+
+func (s *hiddifyAdminBG) startFullCore(in *AdminBgStartRequest) error {
+	s.closeRunning()
+	options, err := fullCoreOptions(in)
+	if err != nil {
+		return err
+	}
+	if err := adminbg.Apply(options, nil); err != nil {
 		return err
 	}
 	s.fullCore = true
 	s.watching = make(chan struct{})
 	go s.watchOwner(in.GetOwnerPid(), s.watching)
 	return nil
+}
+
+// Restart stops the running engine and starts it again with the request, in one call: a change a
+// reload cannot apply (the TUN changed, for one). The app keeps its connection to the service, and
+// the engine stops again once the app is gone, as after a start.
+func (s *hiddifyAdminBG) Restart(ctx context.Context, in *AdminBgStartRequest) (response *AdminBgResponse, err error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("restart tunnel: %v", recovered)
+			response = &AdminBgResponse{Message: err.Error()}
+		}
+	}()
+	if in.GetConfigContent() == "" {
+		err := fmt.Errorf("missing tunnel configuration")
+		return &AdminBgResponse{Message: err.Error()}, err
+	}
+	// startFullCore stops what runs first
+	if err := s.startFullCore(in); err != nil {
+		return &AdminBgResponse{Message: err.Error()}, err
+	}
+	return &AdminBgResponse{Message: "OK"}, nil
+}
+
+// Reload applies a changed configuration (a profile update, a changed option) to the running
+// engine, keeping the TUN and the connections: the same request as Start. When the change cannot
+// be hot reloaded the engine keeps running unchanged and the app starts it again.
+func (s *hiddifyAdminBG) Reload(ctx context.Context, in *AdminBgStartRequest) (response *AdminBgResponse, err error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("reload tunnel: %v", recovered)
+			response = &AdminBgResponse{Message: err.Error()}
+		}
+	}()
+	if !s.fullCore || in.GetConfigContent() == "" {
+		err := fmt.Errorf("no running engine to reload")
+		return &AdminBgResponse{Message: err.Error()}, err
+	}
+	options, err := fullCoreOptions(in)
+	if err == nil {
+		err = adminbg.Reload(options, nil)
+	}
+	if err != nil {
+		return &AdminBgResponse{Message: err.Error()}, err
+	}
+	return &AdminBgResponse{Message: "OK"}, nil
 }
 
 var resourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -180,42 +246,16 @@ func (s *hiddifyAdminBG) watchPort(port int32, done <-chan struct{}) {
 // process listening. Exiting the process would require another administrator prompt to start
 // it again; an idle authenticated listener is enough to avoid a background VPN.
 func (s *hiddifyAdminBG) watchOwner(pid int32, done <-chan struct{}) {
-	if pid <= 0 {
+	if !hprocess.WaitOwnerGone(pid, done) {
 		return
 	}
-	failures := 0
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-		}
-		if processAlive(pid) {
-			failures = 0
-			continue
-		}
-		if failures++; failures < 2 {
-			continue
-		}
-		s.mutex.Lock()
-		select {
-		case <-done:
-		default:
-			s.closeRunning()
-		}
-		s.mutex.Unlock()
-		return
+	s.mutex.Lock()
+	select {
+	case <-done:
+	default:
+		s.closeRunning()
 	}
-}
-
-func processAlive(pid int32) bool {
-	process, err := os.FindProcess(int(pid))
-	if err != nil {
-		return false
-	}
-	return processSignalAlive(process)
+	s.mutex.Unlock()
 }
 
 func (s *hiddifyAdminBG) closeRunning() error {
@@ -330,7 +370,13 @@ func (s *hiddifyAdminBG) Status(ctx context.Context, _ *hcommon.Empty) (*AdminBg
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if s.fullCore || s.box != nil {
-		return &AdminBgResponse{Message: "started"}, nil
+		response := &AdminBgResponse{Message: "started"}
+		// the app's own core points the user's system proxy at the engine (see hcore.DelegatedSystemProxy)
+		if target := hcore.DelegatedSystemProxy(); target != nil {
+			response.SystemProxy = target.Address
+			response.SystemProxySocks = target.SupportSOCKS
+		}
+		return response, nil
 	}
 	return &AdminBgResponse{Message: "stopped"}, nil
 }
