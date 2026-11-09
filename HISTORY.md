@@ -24,6 +24,8 @@ New
 
 Fix
 ~~~
+- Refuse privileged VPN control service startup when its control secret is
+  missing or invalid, instead of accepting unauthenticated local requests.
 - Read share links again with libxray v1.261031.0, whose converter takes a
   key and returns JSON; the core did not build. [hiddify]
 - Ios build. [hiddify]
