@@ -209,44 +209,6 @@ func patchWarp(base *option.Endpoint, configOpt *HiddifyOptions, final bool, sta
 			opts.ServerOptions.ServerPort = 0
 			opts.Profile.Detour = dialDetour(OutboundWARPConfigDetour)
 			return nil
-			is_saved_key := len(opts.UniqueIdentifier) > 1 && opts.UniqueIdentifier[0] == 'p'
-
-			if (configOpt == nil || !final) && is_saved_key {
-				return nil
-			}
-			var wireguardConfig WarpWireguardConfig
-			if is_saved_key {
-				var warpOpt *WarpOptions
-				if opts.UniqueIdentifier == "p1" {
-					warpOpt = &configOpt.Warp
-				} else if opts.UniqueIdentifier == "p2" {
-					warpOpt = &configOpt.Warp2
-				} else {
-					warpOpt = &WarpOptions{
-						Id: opts.UniqueIdentifier,
-					}
-				}
-				warpOpt.Id = opts.UniqueIdentifier
-
-				wireguardConfig = getOrGenerateWarpLocallyIfNeeded(warpOpt)
-			} else {
-				_, _, wgConfig, err := GenerateWarpInfo(opts.UniqueIdentifier, "", "")
-				if err != nil {
-					return err
-				}
-				wireguardConfig = *wgConfig
-			}
-			warpOutbound, err := GenerateWarpSingbox(wireguardConfig, opts.Server, opts.ServerPort, &opts.Noise)
-			if err != nil {
-				fmt.Printf("Error generating warp config: %v", err)
-				return err
-			}
-			base.Type = C.TypeWireGuard
-			if wopts, ok := warpOutbound.Options.(*option.WireGuardEndpointOptions); ok {
-				wopts.Detour = opts.Detour
-				base.Options = wopts
-			}
-
 		}
 	}
 
