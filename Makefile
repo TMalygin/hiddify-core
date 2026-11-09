@@ -220,7 +220,7 @@ build-linux: prepare
 		FINAL_TAGS="$${FINAL_TAGS},with_purego"; \
 	fi; \
 	echo "FinalTags: $$FINAL_TAGS"; \
-	GOOS=linux GOARCH=$(ARCH) $(GOBUILDLIB) -tags $${FINAL_TAGS} -o $(BINDIR)/lib/$(LIBNAME).so ./platform/desktop ;\
+	GOOS=linux GOARCH=$(ARCH) CGO_LDFLAGS="$${CGO_LDFLAGS} -Wl,-soname,$(LIBNAME).so" $(GOBUILDLIB) -tags $${FINAL_TAGS} -o $(BINDIR)/lib/$(LIBNAME).so ./platform/desktop ;\
 	
 	echo "Core library built, now building CLI with CGO linking to core library"
 	mkdir lib
