@@ -24,6 +24,8 @@ New
 
 Fix
 ~~~
+- Load the Linux CLI's core library beside the executable regardless of the
+  working directory.
 - Refuse privileged VPN control service startup when its control secret is
   missing or invalid, instead of accepting unauthenticated local requests.
 - Read share links again with libxray v1.261031.0, whose converter takes a
