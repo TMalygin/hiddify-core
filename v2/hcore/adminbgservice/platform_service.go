@@ -32,21 +32,18 @@ func allowAdminBgMethod(method string) error {
 }
 
 func (m *hiddifyNext) StartAdminBgGrpcServer(listenAddressG string) (*grpc.Server, error) {
+	if len(m.secret) < adminbg.MinSecretLength {
+		return nil, fmt.Errorf("admin_bgservice requires a valid control secret; reinstall the VPN service")
+	}
 	lis, err := net.Listen("tcp", listenAddressG)
 	if err != nil {
 		log.Printf("failed to listen: %v", err)
 		return nil, err
 	}
-	var serverOptions []grpc.ServerOption
-	if m.secret != "" {
-		serverOptions = adminbg.ServerOptions(m.secret, allowAdminBgMethod)
-	}
-	s := grpc.NewServer(serverOptions...)
+	s := grpc.NewServer(adminbg.ServerOptions(m.secret, allowAdminBgMethod)...)
 	m.adminBg = &hiddifyAdminBG{}
 	RegisterHiddifyAdminBGServer(s, m.adminBg)
-	if m.secret != "" {
-		adminbg.RegisterControl(s)
-	}
+	adminbg.RegisterControl(s)
 
 	log.Printf("Server listening on %s", listenAddressG)
 	go func() {
@@ -62,14 +59,12 @@ func (m *hiddifyNext) Start(s service.Service) error {
 	if err := WriteRunningBinaryStamp(); err != nil {
 		return fmt.Errorf("record tunnel binary stamp: %w", err)
 	}
-	if secret, err := LoadControlSecret(); err == nil {
-		m.secret = secret
-	} else if os.IsNotExist(err) {
-		log.Printf("tunnel control secret missing; gRPC is unauthenticated until reinstall")
-	} else {
-		return err
+	secret, err := LoadControlSecret()
+	if err != nil {
+		return fmt.Errorf("load admin_bgservice control secret; reinstall the VPN service: %w", err)
 	}
-	_, err := m.StartAdminBgGrpcServer(fmt.Sprintf("127.0.0.1:%d", port))
+	m.secret = secret
+	_, err = m.StartAdminBgGrpcServer(fmt.Sprintf("127.0.0.1:%d", port))
 	return err
 }
 
