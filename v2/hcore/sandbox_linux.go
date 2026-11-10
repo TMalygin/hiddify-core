@@ -130,9 +130,15 @@ func sandboxPublish(ctx context.Context, options *option.Options) {
 }
 
 func sandboxLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
+	if static.HiddifyOptions == nil {
+		return nil, errors.New("sandbox DNS settings are unavailable")
+	}
+	if outbound.Type == "vless" {
+		return sandboxRealityLeaf(outbound)
+	}
 	socks, ok := outbound.Options.(*option.SOCKSOutboundOptions)
-	if outbound.Type != "socks" || !ok {
-		return nil, errors.New("sandbox requires an explicit SOCKS5 proxy; DIRECT and automatic groups are forbidden")
+	if outbound.Type != "socks" || !ok || socks == nil {
+		return nil, errors.New("sandbox requires an explicit SOCKS5 or VLESS/Reality proxy; DIRECT and automatic groups are forbidden")
 	}
 	if !reflect.DeepEqual(socks.DialerOptions, option.DialerOptions{}) || socks.Network != "" || socks.UDPOverTCP != nil {
 		return nil, errors.New("sandbox does not support proxy detours, custom dialers or UDP-over-TCP")
@@ -141,11 +147,53 @@ func sandboxLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
 	if version == "" {
 		version = "5"
 	}
-	if static.HiddifyOptions == nil {
-		return nil, errors.New("sandbox DNS settings are unavailable")
-	}
 	content, err := json.Marshal(sandbox.Policy{Type: "socks", Version: version, Server: socks.Server, ServerPort: socks.ServerPort,
 		DNSServer: static.HiddifyOptions.RemoteDnsAddress, Username: socks.Username, Password: socks.Password})
+	if err != nil {
+		return nil, err
+	}
+	return sandbox.ParsePolicy(bytes.NewReader(content))
+}
+
+func sandboxRealityLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
+	vless, ok := outbound.Options.(*option.VLESSOutboundOptions)
+	if !ok || vless == nil || vless.TLS == nil || vless.TLS.UTLS == nil || vless.TLS.Reality == nil {
+		return nil, errors.New("sandbox VLESS requires explicit Reality and uTLS settings")
+	}
+	if vless.Encryption != "" && vless.Encryption != "none" {
+		return nil, errors.New("sandbox VLESS does not support additional encryption settings")
+	}
+	if vless.PacketEncoding != nil && *vless.PacketEncoding != "xudp" {
+		// nil is the engine's XUDP default; an explicitly empty string is native
+		// UDP, which is a different protocol and must not be silently replaced.
+		return nil, errors.New("sandbox VLESS supports XUDP only")
+	}
+	tls := vless.TLS
+	allowedTLS := &option.OutboundTLSOptions{
+		Enabled: true, ServerName: tls.ServerName,
+		UTLS: &option.OutboundUTLSOptions{Enabled: true, Fingerprint: tls.UTLS.Fingerprint},
+		Reality: &option.OutboundRealityOptions{Enabled: true, PublicKey: tls.Reality.PublicKey,
+			ShortID: tls.Reality.ShortID, KeyShare: tls.Reality.KeyShare},
+	}
+	// Compare against a constructed allow-list, including nested TLS options.
+	// This also rejects newly added engine options until explicitly reviewed;
+	// do not silently discard detours, ECH, certificate paths, fragmentation,
+	// platform TLS engines, custom dialers or other profile behavior.
+	allowed := option.VLESSOutboundOptions{
+		ServerOptions: option.ServerOptions{Server: vless.Server, ServerPort: vless.ServerPort},
+		UUID:          vless.UUID, Flow: vless.Flow, Encryption: vless.Encryption,
+		OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{TLS: allowedTLS},
+		PacketEncoding:              vless.PacketEncoding,
+	}
+	if !reflect.DeepEqual(*vless, allowed) {
+		return nil, errors.New("sandbox VLESS profile contains unsupported TLS, dialer or transport settings")
+	}
+	content, err := json.Marshal(sandbox.Policy{
+		Type: "vless", Server: vless.Server, ServerPort: vless.ServerPort,
+		DNSServer: static.HiddifyOptions.RemoteDnsAddress, UUID: vless.UUID, Flow: vless.Flow,
+		ServerName: tls.ServerName, PublicKey: tls.Reality.PublicKey, ShortID: tls.Reality.ShortID,
+		Fingerprint: tls.UTLS.Fingerprint, PacketEncoding: "xudp", KeyShare: tls.Reality.KeyShare,
+	})
 	if err != nil {
 		return nil, err
 	}

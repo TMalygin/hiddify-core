@@ -16,7 +16,7 @@ revocation returns 125. The CLI is not an interactive terminal wrapper.
 
 Without `--proxy-file`, the command runs in an isolated network namespace with
 no TUN and no external route. With a policy, a dedicated sing-box TUN worker
-forwards TCP and UDP through one SOCKS5 outbound. DNS packets, including IPv6
+forwards TCP and UDP through one SOCKS5 or VLESS/Reality outbound. DNS packets, including IPv6
 queries, use that path. Engine DNS also explicitly uses the proxy. There is no
 DIRECT outbound, imported route, host resolver or fallback on proxy failure.
 ICMP and other unsupported traffic cannot fall back to host networking.
@@ -43,6 +43,35 @@ anonymous file; it is never reloaded from a mutable path or exposed to the app.
 The SOCKS server and its nominated UDP relay are trusted tunnel endpoints.
 SOCKS5 itself does not encrypt traffic. Do not point this prototype at Hiddify's
 ordinary mixed port: that server can apply DIRECT rules.
+
+### VLESS/Reality policy
+
+Tracking: [hiddify-app issue 48](https://github.com/TMalygin/hiddify-app/issues/48).
+The alternative sealed policy has `type: "vless"`, the same numeric `server`,
+`server_port` and `dns_server`, plus `uuid`, `flow`, `server_name`, `public_key`,
+`short_id`, `fingerprint`, `packet_encoding` and `key_share`. No SOCKS fields or
+nested arbitrary engine options are accepted. Credentials are supplied at
+runtime; never put a real profile or private key in test fixtures.
+
+- UUID must be canonical and nonzero. Flow is empty or `xtls-rprx-vision`.
+- TLS, Reality and uTLS are always enabled. SNI must be an explicit ASCII DNS
+  name. The raw URL-base64 Reality public key must encode 32 bytes and cannot
+  be a low-order X25519 point. Short ID is empty or even-length hexadecimal,
+  at most 16 digits.
+- Fixed fingerprints: `chrome`, `firefox`, `edge`, `safari`, `ios`, `android`.
+  Empty fingerprint uses the engine's Chrome default explicitly.
+- `packet_encoding` is `xudp`. In managed profiles, an absent packet encoding
+  means XUDP; explicitly empty/native UDP and `packetaddr` are rejected.
+- `key_share` is `hybrid`; an empty value is normalized to that default.
+  Adaptive `auto` and explicit `classical` are not supported by this policy.
+
+Managed extraction accepts only this subset, including no extra VLESS
+encryption (`""` or `"none"`). It rejects custom dialers, detours, transport,
+multiplexing and all other TLS options rather than silently removing them.
+Proxy/DNS hostname bootstrap, custom DNS transports and other protocol settings
+remain unsupported. Failed Reality authentication cannot forward application
+payloads or select DIRECT. Worker readiness means its isolated forwarding
+instance started; it is not a successful remote-handshake or connectivity test.
 
 ## Experimental managed RPC
 
@@ -75,14 +104,13 @@ revisions. Application output is untrusted and must be escaped by a GUI client.
 All output is drained before the terminal exit event. Ordinary nonzero command
 exit codes are preserved; a guardian failure is reported as an error instead.
 
-This stage supports only numeric SOCKS5 leaves, selected directly or through
-explicit selectors. DIRECT, automatic groups, detours, custom dialers,
+This stage supports numeric SOCKS5 leaves and the VLESS/Reality subset above,
+selected directly or through explicit selectors. DIRECT, automatic groups, detours, custom dialers,
 UDP-over-TCP and domain-based DNS/proxy endpoints remain offline. Unused DIRECT
 outbounds in an ordinary profile are not copied into the worker. Profiles with
 an external Clash controller are ineligible because it bypasses the native
 selection barrier. Automatic keep-top reload revokes existing permission until
-a successful explicit restart or reload. VLESS/Reality is the next requested transport;
-it is **not supported by this change**.
+a successful explicit restart or reload. Neither transport adds a GUI launcher.
 
 The ordinary core may run its own health checks independently. The managed
 contract restricts launched applications, not all network activity of Hiddify.
@@ -152,7 +180,8 @@ Without the explicit binary environment variable these host tests are skipped.
   outstanding test failures before integration. A selected DB row or UI
   connection state is not sufficient to grant network permission.
 - Validate supported proxy graphs and their bootstrap/relay transport; reject
-  DIRECT and bypass rules. Only one SOCKS5 transport is tested here.
+  DIRECT and bypass rules. Support is restricted to the SOCKS5 and VLESS/Reality
+  subsets above; other transports and hostname bootstrap need separate work.
 - Package and verify the helper/dependencies for AppImage; add supported GUI
   isolation and persistent storage. Shared host X11/D-Bus and browser
   single-instance forwarding must not become escape paths.
