@@ -279,7 +279,10 @@ func (s *CoreService) RunSandbox(request *SandboxRunRequest, stream grpc.ServerS
 		select {
 		case <-stream.Context().Done():
 			return stream.Context().Err()
-		case event := <-session.Events():
+		case event, open := <-session.Events():
+			if !open {
+				return status.Error(codes.Unavailable, "sandbox guardian exited without completing the session")
+			}
 			state := SandboxState_SANDBOX_OFFLINE
 			switch event.State {
 			case "online":
@@ -297,8 +300,6 @@ func (s *CoreService) RunSandbox(request *SandboxRunRequest, stream grpc.ServerS
 			if event.State == "exited" {
 				return nil
 			}
-		case <-session.Done():
-			return status.Error(codes.Unavailable, "sandbox guardian exited")
 		}
 	}
 }

@@ -37,6 +37,11 @@ type managedUpdate struct {
 	Policy   *Policy `json:"policy"`
 }
 
+type managedCompletion struct {
+	terminal *ManagedEvent
+	err      error
+}
+
 // Managed owns an isolated application's guardian. Update(nil) closes only its
 // proxy worker. Close ends the application session; the ordinary profile Stop
 // path must use Update(nil), not Close.
@@ -87,6 +92,7 @@ func StartManaged(ctx context.Context, command []string) (*Managed, error) {
 	process.Stdout = managedOutput{m, false}
 	process.Stderr = managedOutput{m, true}
 	started := make(chan error, 1)
+	completion := make(chan managedCompletion, 1)
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
@@ -94,8 +100,28 @@ func StartManaged(ctx context.Context, command []string) (*Managed, error) {
 		statusWrite.Close()
 		started <- err
 		if err == nil {
-			process.Wait()
+			// Wait joins the stdout/stderr copy goroutines. The status reader
+			// independently reaches EOF and retains EXITED rather than exposing
+			// it early. Both producers must finish before terminal delivery.
+			waitErr := process.Wait()
+			result := <-completion
+			var final ManagedEvent
+			if result.err != nil {
+				final = ManagedEvent{State: "error", Error: result.err.Error()}
+			} else if err := guardianExitError(waitErr, result.terminal.ExitCode); err != nil {
+				final = ManagedEvent{Revision: result.terminal.Revision, State: "error", Error: err.Error()}
+			} else {
+				final = *result.terminal
+			}
+			// Report a broken channel even if readStatus already revoked the
+			// session. With a full output buffer, closure itself reports failure
+			// to the RPC consumer; never wait for it to permit cleanup.
+			select {
+			case m.events <- final:
+			default:
+			}
 		}
+		close(m.events)
 		close(m.done)
 	}()
 	if err := <-started; err != nil {
@@ -103,7 +129,7 @@ func StartManaged(ctx context.Context, command []string) (*Managed, error) {
 		statusRead.Close()
 		return nil, fmt.Errorf("create rootless guardian: %w", err)
 	}
-	go m.readStatus(statusRead)
+	go func() { completion <- m.readStatus(statusRead) }()
 	select {
 	case err := <-m.ready:
 		if err != nil {
@@ -126,6 +152,22 @@ func rootlessAttributes() *syscall.SysProcAttr {
 
 func (m *Managed) Events() <-chan ManagedEvent { return m.events }
 func (m *Managed) Done() <-chan struct{}       { return m.done }
+
+// A nonzero application exit is a successful protocol completion, but an
+// unexpected guardian failure must not be hidden by its earlier status frame.
+func guardianExitError(waitErr error, reportedCode int) error {
+	if waitErr == nil && reportedCode == 0 {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == reportedCode && reportedCode >= 0 {
+		return nil
+	}
+	if waitErr != nil {
+		return fmt.Errorf("sandbox guardian failed after reporting exit %d: %w", reportedCode, waitErr)
+	}
+	return fmt.Errorf("sandbox guardian reported exit %d but exited successfully", reportedCode)
+}
 
 func (m *Managed) emit(event ManagedEvent) {
 	select {
@@ -155,23 +197,37 @@ func (w managedOutput) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-func (m *Managed) readStatus(reader *os.File) {
+func (m *Managed) readStatus(reader *os.File) managedCompletion {
 	defer reader.Close()
 	decoder := json.NewDecoder(reader)
 	first := true
 	var highestRevision uint64
+	var terminal *ManagedEvent
 	for {
 		var event ManagedEvent
 		if err := decoder.Decode(&event); err != nil {
+			if err == io.EOF && terminal != nil {
+				return managedCompletion{terminal: terminal}
+			}
 			if first {
 				m.ready <- fmt.Errorf("sandbox guardian did not become ready: %w", err)
 			}
-			m.emit(ManagedEvent{State: "error", Error: "sandbox guardian control channel closed"})
-			return
+			// Stop without waiting: the completion coordinator itself joins
+			// this reader. A broken control channel must revoke permission.
+			m.stop()
+			return managedCompletion{err: fmt.Errorf("sandbox guardian control channel closed without valid completion: %w", err)}
+		}
+		if terminal != nil {
+			m.stop()
+			return managedCompletion{err: errors.New("sandbox guardian sent status after its terminal event")}
 		}
 		if first {
 			first = false
 			m.ready <- nil
+		}
+		if event.State == "exited" {
+			terminal = &event
+			continue
 		}
 		m.mu.Lock()
 		reply := m.pending[event.Revision]
@@ -223,6 +279,10 @@ func (m *Managed) Update(ctx context.Context, revision uint64, policy *Policy) e
 }
 
 func (m *Managed) Close() {
-	m.closeOnce.Do(func() { close(m.closed); m.input.Close(); m.process.Process.Kill() })
+	m.stop()
 	<-m.done
+}
+
+func (m *Managed) stop() {
+	m.closeOnce.Do(func() { close(m.closed); m.input.Close(); m.process.Process.Kill() })
 }

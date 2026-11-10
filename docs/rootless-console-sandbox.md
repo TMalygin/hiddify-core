@@ -63,6 +63,8 @@ keeps sandbox applications offline even if the ordinary core retains its old
 config. Late completion of a cancelled operation cannot grant permission.
 Worker failure leaves the application offline; there is no automatic retry.
 Core/guardian death terminates the child session through parent-death handling.
+An invalid selection revokes permission but retains the accepted config for a
+later valid selection. Failed config replacement still invalidates that snapshot.
 
 The application sees a fixed resolver address. An explicit DNS route action
 uses the profile's numeric remote resolver over proxied TCP. IPv4/IPv6 default
@@ -70,6 +72,8 @@ routes exist only inside the child namespace and disappear with the TUN link,
 including after SIGKILL. Reconnecting replaces the worker, not the application.
 The stream reports offline/online/error/exit/output events and permission
 revisions. Application output is untrusted and must be escaped by a GUI client.
+All output is drained before the terminal exit event. Ordinary nonzero command
+exit codes are preserved; a guardian failure is reported as an error instead.
 
 This stage supports only numeric SOCKS5 leaves, selected directly or through
 explicit selectors. DIRECT, automatic groups, detours, custom dialers,

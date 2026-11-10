@@ -31,6 +31,10 @@ New
 
 Fix
 ~~~
+- Keep the accepted sandbox config after a rejected proxy selection, allowing
+  a later valid selection to restore network without restarting the application.
+- Deliver sandbox stdout/stderr before its terminal exit event, including when
+  the core is delayed; preserve nonzero application exit codes.
 - Restore the shared DNS regression profile so the committed tests compile.
 - Load the Linux CLI's core library beside the executable regardless of the
   working directory.
