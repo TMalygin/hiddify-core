@@ -178,7 +178,7 @@ func exitCode(err error) int {
 	return 1
 }
 
-func worker(args []string) (int, error) {
+func worker(args []string) (code int, resultErr error) {
 	if len(args) == 0 {
 		return 1, errors.New("missing child command")
 	}
@@ -222,9 +222,19 @@ func worker(args []string) (int, error) {
 	defer process.Process.Kill()
 	var instance *box.Box
 	if policy != nil {
+		// The child can exit before engine cleanup. Keep its namespace alive by
+		// fd instead of using a /proc/<pid> path that disappears on exit. This
+		// handle is opened after child exec and is never inherited by the app.
+		namespace, err := os.Open(fmt.Sprintf("/proc/%d/ns/net", process.Process.Pid))
+		if err != nil {
+			process.Process.Kill()
+			process.Wait()
+			return 1, fmt.Errorf("open child network namespace: %w", err)
+		}
+		defer namespace.Close()
 		instance, err = box.New(box.Options{
 			Context: include.Context(context.Background()),
-			Options: workerOptions(policy, fmt.Sprintf("/proc/%d/ns/net", process.Process.Pid)),
+			Options: workerOptions(policy, fmt.Sprintf("/proc/self/fd/%d", namespace.Fd())),
 		})
 		if err == nil {
 			err = instance.Start()
@@ -233,11 +243,18 @@ func worker(args []string) (int, error) {
 			process.Process.Kill()
 			process.Wait()
 			if instance != nil {
-				instance.Close()
+				err = errors.Join(err, instance.Close())
 			}
 			return 1, fmt.Errorf("start isolated proxy worker: %w", err)
 		}
-		defer instance.Close()
+		defer func() {
+			if err := instance.Close(); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("close isolated proxy worker: %w", err))
+				if code == 0 {
+					code = 1
+				}
+			}
+		}()
 	}
 	if _, err := gate.Write([]byte{1}); err != nil {
 		process.Process.Kill()
