@@ -7,6 +7,10 @@ Changelog
 
 New
 ~~~
+- Allow the experimental Linux rootless sandbox to use a restricted
+  VLESS/Reality policy: empty/Vision flow, XUDP, fixed uTLS fingerprints and
+  numeric proxy/DNS endpoints. Unsupported options fail closed; profile
+  disconnect/replacement keeps applications alive offline. No GUI is added.
 - Add an experimental authenticated Linux RunSandbox stream. Native profile
   revocation closes the proxy worker while keeping the isolated command alive.
   Initial support is restricted to explicit SOCKS5 leaves and numeric DNS;
