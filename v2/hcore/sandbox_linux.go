@@ -309,7 +309,10 @@ func (s *CoreService) RunSandbox(request *SandboxRunRequest, stream grpc.ServerS
 	sandboxLeases.Unlock()
 	defer func() { sandboxLeases.Lock(); sandboxLeases.reserved--; sandboxLeases.Unlock() }()
 	ctx, cancel := context.WithTimeout(stream.Context(), 10*time.Second)
-	session, err := sandbox.StartManaged(ctx, request.Command)
+	mu.Lock()
+	workingDirectory := sSandboxWorkingPath
+	mu.Unlock()
+	session, err := sandbox.StartManagedWithApplication(ctx, request.Command, workingDirectory, request.ApplicationId)
 	cancel()
 	if err != nil {
 		return status.Error(codes.FailedPrecondition, err.Error())

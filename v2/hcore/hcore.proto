@@ -375,6 +375,9 @@ message EnsureAdminBgServiceEvent {
 message SandboxRunRequest {
   // Absolute executable followed by arguments. No shell expansion or host env.
   repeated string command = 1;
+  // Optional private persistent HOME identity: [a-z0-9][a-z0-9_-]{0,63}.
+  // Empty preserves the temporary console HOME. No caller-supplied host path.
+  string application_id = 2;
 }
 
 enum SandboxState {

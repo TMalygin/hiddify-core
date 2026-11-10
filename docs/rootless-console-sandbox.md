@@ -119,6 +119,56 @@ application. The worker gets a sealed immutable policy containing credentials.
 Regenerate client stubs from the additive protobuf API before app integration;
 non-Linux platforms return `Unimplemented` for this RPC.
 
+### Persistent application data
+
+Tracking: [hiddify-app issue 49](https://github.com/TMalygin/hiddify-app/issues/49).
+The additive `SandboxRunRequest.application_id` field opts into persistent data.
+It accepts `[a-z0-9][a-z0-9_-]{0,63}`, not a path. Empty keeps the original
+temporary console HOME and environment. Clients must use a compatible core:
+older protobuf servers ignore unknown fields. Regenerate client stubs before
+using this field; no Dart/UI launcher is included in this native stage.
+
+The trusted core Setup working directory is resolved to an absolute path before
+the core changes its current directory. Data lives under
+`<working-directory>/sandbox-apps/<application-id>/home`. The working directory
+must belong to the current user and cannot be group/other writable. Private
+storage directories must be owned by that user with mode 0700. Unsafe existing
+paths are rejected, not repaired or chmodded. Descriptor-relative opens reject
+symlinks; the home directory is pinned by FD before it reaches bubblewrap.
+Renaming/replacing its host pathname cannot redirect an existing mount.
+
+Only that application's home is mounted writable at `/home/sandbox`. XDG config,
+data, cache and state paths are `.config`, `.local/share`, `.cache` and
+`.local/state` within it; the application creates its own subdirectories.
+`XDG_RUNTIME_DIR=/run/sandbox` is a fresh private 0700 directory on every launch.
+Host HOME, existing browser profiles, host runtime sockets, other application
+homes and core credentials are not imported. This does not grant a file picker,
+arbitrary host-directory mounts or access to executables under `/opt`.
+
+One live PID namespace may use an application identity. A 0600 `.lock` outside
+the mounted home serializes startup, but is never passed into the sandbox:
+even a descriptor retained only by its PID 1 can be exposed through `/proc`.
+An atomic, fsynced `.lease.json` first records `preparing` with the boot ID.
+Bubblewrap then reports its host-visible namespace PID 1 while the application
+is blocked. The core records `running` with the boot ID, PID and process start
+time durably before releasing application execution. The startup lock can then
+close; the persistent record protects the remaining application lifetime.
+
+A later launch validates metadata type, owner, permissions, link count, size
+and version before checking the previous namespace. Matching live process
+identity refuses reuse; pidfd exit notification, absent/replaced identity or
+a different boot establish that the old namespace has gone. Recovery never
+signals a recorded PID. A same-boot `preparing` record or corrupt metadata
+fails closed even after the startup lock is free. Interrupted preparation can
+recover after reboot; corrupt or unsafe metadata needs explicit offline
+inspection. Do not remove a fence while its sandbox may still be alive.
+
+Profile stop/replacement still leaves the application alive offline; cancelling
+its RPC ends the session. Persistent data has no automatic deletion or quota.
+The system installation and host processes with access to the user's files
+remain trusted. This stage adds no display, clipboard, audio, browser sandbox
+compatibility, profile import or unrestricted fallback.
+
 ## Isolation and prerequisites
 
 Linux x86_64, unprivileged user namespaces, `/dev/net/tun`, seccomp, memfd seals
@@ -127,6 +177,8 @@ and a system `/usr/bin/bwrap` with `--disable-userns` and
 effective/permitted host capabilities, setuid/setgid bwrap and file capabilities.
 An unsupported environment fails the launch; it never executes unrestricted.
 Other architectures currently return an explicit unsupported error.
+Persistent sessions additionally require `openat2`, `pidfd_open` and bubblewrap
+support for `--bind-fd`, `--info-fd` and `--block-fd`. Missing support fails closed.
 
 The worker receives only capabilities inside a newly created user namespace.
 Its host network namespace is retained solely for proxy transport; the child
@@ -139,7 +191,8 @@ user namespaces and creates a new session. The application sees read-only
 system executables/libraries, private `/proc`, `/dev`, temporary home and `/tmp`,
 and a generated resolver file. Host home, `/run`, display and D-Bus sockets,
 profile files, host process handles and inherited socket descriptors are absent.
-No writable host directories are exported. The environment is cleared.
+The optional persistent mode exports only its dedicated application home and
+adds the private XDG paths described above. The environment is cleared.
 
 An application-side seccomp filter permits IP/Unix sockets and route netlink,
 blocks other socket families (including VSOCK), io_uring, keyrings, cross-process
@@ -174,6 +227,14 @@ host routing, exit codes, lease EOF and SIGKILL of worker/launcher. Additional
 raw-syscall tests verify socket-family, io_uring, keyring and process restrictions.
 Without the explicit binary environment variable these host tests are skipped.
 
+Build `tests/fixtures/sandbox_storage_driver` with the same CLI build tags and
+run the persistent RPC contract with
+`HIDDIFY_STORAGE_DRIVER=/absolute/path/storage-driver python3 -m unittest discover -s tests -p test_sandbox_storage.py -v`.
+It covers persistence, separate identities, modes, symlinks and path replacement,
+metadata hardlinks/FIFOs/sockets, process fencing, descriptor isolation and
+offline/proxy/disconnect behavior. These are synthetic console applications,
+not acceptance tests for Brave, Chrome or ChatGPT/Electron.
+
 ## Work required before app integration
 
 - Validate the managed RPC lifecycle across production clients and resolve all
@@ -182,8 +243,8 @@ Without the explicit binary environment variable these host tests are skipped.
 - Validate supported proxy graphs and their bootstrap/relay transport; reject
   DIRECT and bypass rules. Support is restricted to the SOCKS5 and VLESS/Reality
   subsets above; other transports and hostname bootstrap need separate work.
-- Package and verify the helper/dependencies for AppImage; add supported GUI
-  isolation and persistent storage. Shared host X11/D-Bus and browser
+- Package and verify the helper/dependencies for AppImage; integrate persistent
+  data into a supported GUI launcher. Shared host X11/D-Bus and browser
   single-instance forwarding must not become escape paths.
 - Add adversarial protocol/GUI tests, explicit QUIC/DoH/DoT application fixtures,
   platform coverage and performance/resource-limit measurements. Generic UDP

@@ -9,6 +9,7 @@ import (
 
 var (
 	sWorkingPath          string
+	sSandboxWorkingPath   string // absolute setup path, captured before core chdir
 	sTempPath             string
 	sUserID               int
 	sGroupID              int
