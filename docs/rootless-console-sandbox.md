@@ -77,7 +77,7 @@ UDP-over-TCP and domain-based DNS/proxy endpoints remain offline. Unused DIRECT
 outbounds in an ordinary profile are not copied into the worker. Profiles with
 an external Clash controller are ineligible because it bypasses the native
 selection barrier. Automatic keep-top reload revokes existing permission until
-an explicit profile operation. VLESS/Reality is the next requested transport;
+a successful explicit restart or reload. VLESS/Reality is the next requested transport;
 it is **not supported by this change**.
 
 The ordinary core may run its own health checks independently. The managed

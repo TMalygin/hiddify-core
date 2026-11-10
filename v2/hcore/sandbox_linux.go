@@ -51,11 +51,21 @@ func sandboxBegin(ctx context.Context) context.Context {
 
 // Takes ownership of the broker lock and releases it before waiting on helpers.
 func sandboxBeginLocked(ctx context.Context) context.Context {
+	// A config replacement or stop invalidates the accepted snapshot as well
+	// as permission. A failed replacement must not be undone by selecting a
+	// proxy in the ordinary core's still-running old config.
+	sandboxLeases.profile = nil
+	return sandboxRevokeLocked(ctx)
+}
+
+// Revoke permission independently of the accepted config. Selection attempts
+// keep that config available for a later explicit, successful selection, but
+// no existing or new application may use it while policy is nil.
+func sandboxRevokeLocked(ctx context.Context) context.Context {
 	sandboxLeases.generation++
 	generation := sandboxLeases.generation
 	sandboxLeases.revision++
 	revision := sandboxLeases.revision
-	sandboxLeases.profile = nil
 	sandboxLeases.policy = nil
 	sessions := sandboxSessionsLocked()
 	sandboxLeases.Unlock()
@@ -207,7 +217,7 @@ func sandboxPublishProfile(ctx context.Context, profile *sandboxProfile) {
 func sandboxSelection() func(bool) {
 	sandboxLeases.Lock()
 	profile := sandboxLeases.profile
-	ctx := sandboxBeginLocked(context.Background())
+	ctx := sandboxRevokeLocked(context.Background())
 	return func(success bool) {
 		if success && profile != nil {
 			sandboxPublishProfile(ctx, profile)
