@@ -66,6 +66,17 @@ func StartManaged(ctx context.Context, command []string) (*Managed, error) {
 // workingDirectory comes from trusted core Setup, never the launch request.
 // An empty applicationID preserves the original temporary console sandbox.
 func StartManagedWithApplication(ctx context.Context, command []string, workingDirectory, applicationID string) (*Managed, error) {
+	return StartManagedWithOptions(ctx, command, workingDirectory, ApplicationOptions{ID: applicationID})
+}
+
+// ApplicationOptions describes explicit filesystem capabilities. Host paths
+// cannot select writable data roots; ID is resolved beneath core Setup's path.
+type ApplicationOptions struct {
+	ID             string
+	ExecutableRoot string
+}
+
+func StartManagedWithOptions(ctx context.Context, command []string, workingDirectory string, options ApplicationOptions) (*Managed, error) {
 	if err := checkRootless(); err != nil {
 		return nil, err
 	}
@@ -82,11 +93,25 @@ func StartManagedWithApplication(ctx context.Context, command []string, workingD
 	if size > 64*1024 {
 		return nil, errors.New("sandbox command exceeds 64 KiB")
 	}
+	var bundle *executableBundle
+	if options.ExecutableRoot != "" {
+		if !validApplicationID(options.ID) {
+			return nil, errors.New("an executable bundle requires a valid application_id")
+		}
+		var err error
+		// Host root ownership must be checked here, before a helper's user
+		// namespace maps UID 0 to the overflow ID. Pass only the pinned FD.
+		bundle, err = openExecutableBundle(ctx, options.ExecutableRoot, command)
+		if err != nil {
+			return nil, err
+		}
+		defer bundle.close()
+	}
 	var storage *applicationStorage
 	var infoRead, infoWrite, blockRead, blockWrite *os.File
-	if applicationID != "" {
+	if options.ID != "" {
 		var err error
-		storage, err = openApplicationStorage(workingDirectory, applicationID)
+		storage, err = openApplicationStorage(workingDirectory, options.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -110,12 +135,19 @@ func StartManagedWithApplication(ctx context.Context, command []string, workingD
 	if err != nil {
 		return nil, err
 	}
-	process := selfCommand("__session", command...)
-	process.ExtraFiles = []*os.File{statusWrite}
+	mode, arguments := "__session", command
+	files := []*os.File{statusWrite}
 	if storage != nil {
-		process = selfCommand("__stored_session", command...)
-		process.ExtraFiles = []*os.File{statusWrite, storage.home, infoWrite, blockRead}
+		mode = "__stored_session"
+		files = append(files, storage.home, infoWrite, blockRead)
 	}
+	if bundle != nil {
+		mode = "__bundled_session"
+		arguments = append([]string{bundle.path}, command...)
+		files = append(files, bundle.directory)
+	}
+	process := selfCommand(mode, arguments...)
+	process.ExtraFiles = files
 	process.SysProcAttr = rootlessAttributes()
 	input, err := process.StdinPipe()
 	if err != nil {

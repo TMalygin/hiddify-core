@@ -44,7 +44,7 @@ type tunnelReady struct {
 	err     error
 }
 
-func managedSession(args []string, persistent bool) (int, error) {
+func managedSession(args []string, persistent bool, bundleRoot string) (int, error) {
 	if len(args) == 0 {
 		return 1, errors.New("missing isolated application")
 	}
@@ -69,12 +69,18 @@ func managedSession(args []string, persistent bool) (int, error) {
 	var storageFiles []*os.File
 	if persistent {
 		storageFiles = []*os.File{os.NewFile(4, "application-home"), os.NewFile(5, "namespace-info"), os.NewFile(6, "storage-gate")}
+		if bundleRoot != "" {
+			storageFiles = append(storageFiles, os.NewFile(7, "executable-bundle"))
+		}
 		defer func() {
 			for _, file := range storageFiles {
 				file.Close()
 			}
 		}()
 		application = selfCommand("__stored_child", args...)
+		if bundleRoot != "" {
+			application = selfCommand("__bundled_child", append([]string{bundleRoot}, args...)...)
+		}
 		application.ExtraFiles = append([]*os.File{resolver, filter}, storageFiles...)
 	}
 	application.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET, Pdeathsig: syscall.SIGKILL}
@@ -88,7 +94,7 @@ func managedSession(args []string, persistent bool) (int, error) {
 		return 1, fmt.Errorf("create application namespace: %w", err)
 	}
 	for _, file := range storageFiles {
-		file.Close() // only bwrap retains the home/info/gate copies
+		file.Close() // only bwrap retains the home/info/gate/bundle copies
 	}
 	appDone := make(chan error, 1)
 	go func() { appDone <- application.Wait() }()

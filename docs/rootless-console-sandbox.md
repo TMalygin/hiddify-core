@@ -142,8 +142,8 @@ data, cache and state paths are `.config`, `.local/share`, `.cache` and
 `.local/state` within it; the application creates its own subdirectories.
 `XDG_RUNTIME_DIR=/run/sandbox` is a fresh private 0700 directory on every launch.
 Host HOME, existing browser profiles, host runtime sockets, other application
-homes and core credentials are not imported. This does not grant a file picker,
-arbitrary host-directory mounts or access to executables under `/opt`.
+homes and core credentials are not imported. Persistent data alone does not
+grant a file picker, arbitrary host-directory mounts or `/opt` access.
 
 One live PID namespace may use an application identity. A 0600 `.lock` outside
 the mounted home serializes startup, but is never passed into the sandbox:
@@ -169,6 +169,49 @@ The system installation and host processes with access to the user's files
 remain trusted. This stage adds no display, clipboard, audio, browser sandbox
 compatibility, profile import or unrestricted fallback.
 
+### Read-only system executable bundles
+
+Tracking: [hiddify-app issue 50](https://github.com/TMalygin/hiddify-app/issues/50).
+The optional `SandboxRunRequest.executable_root` field grants access to one
+system-installed bundle. It requires a nonempty `application_id`. Both paths
+must be canonical absolute paths: the root is strictly below `/opt` and must
+equal the parent of `command[0]`. No caller-supplied mount destination or host
+environment is accepted. Empty preserves the existing console/storage modes.
+
+For example, `/opt/google/chrome` with command
+`/opt/google/chrome/chrome --version` selects the installed Chrome bundle.
+`/opt/google/chrome/google-chrome --version` also selects its package wrapper.
+The `/usr/bin/google-chrome-stable` wrapper is outside that directory and does
+not satisfy this explicit contract. Applications already under read-only `/usr`
+do not need an additional bundle. No shell wrapper is parsed to infer paths.
+
+Before creating a user namespace, the core opens every ancestor without
+following symlinks and checks UID 0 ownership with no group/other write.
+It scans the pinned bundle directory in bounded batches, with context
+cancellation checks, at most 16,384 descendants and relative depth 32 (root
+depth zero). Only readable directories and regular files are accepted. All
+symlinks, special nodes, regular-file hardlinks, file capabilities and nested
+mounts are rejected. `openat2` enforces `RESOLVE_NO_XDEV` for descendant opens,
+including same-filesystem bind mounts; comparing device IDs is insufficient.
+The selected file must be executable and cannot be setuid or setgid. An inert
+bundled helper such as `chrome-sandbox` may retain its setuid mode, but receives
+no privilege through the read-only/nosuid/nodev mount and `no_new_privs`.
+
+Only the validated directory FD and its destination path reach the helper.
+Bubblewrap mounts it read-only at that path and consumes the descriptor before
+application execution. Neither the application nor namespace PID 1 retains a
+raw directory FD into the host filesystem. The parent directory, other `/opt`
+packages and host IPC endpoints are not exported. The existing network/profile
+revocation policy and application storage lifetime fence remain in force.
+
+The host root and package installer remain trusted. A directory descriptor pins
+an inode, not an immutable recursive snapshot; a trusted package update can
+change the contents after validation. User-owned bundles, child AppImages,
+symlink-based or nested executable layouts need a separate import/validation
+design. This capability does not make a browser GUI or its native renderer
+sandbox compatible; no `--no-sandbox` workaround is added. Regenerate client
+stubs and pin a compatible core before relying on the additive field.
+
 ## Isolation and prerequisites
 
 Linux x86_64, unprivileged user namespaces, `/dev/net/tun`, seccomp, memfd seals
@@ -179,6 +222,7 @@ An unsupported environment fails the launch; it never executes unrestricted.
 Other architectures currently return an explicit unsupported error.
 Persistent sessions additionally require `openat2`, `pidfd_open` and bubblewrap
 support for `--bind-fd`, `--info-fd` and `--block-fd`. Missing support fails closed.
+Executable bundles additionally require `--ro-bind-fd` support.
 
 The worker receives only capabilities inside a newly created user namespace.
 Its host network namespace is retained solely for proxy transport; the child
@@ -192,7 +236,8 @@ system executables/libraries, private `/proc`, `/dev`, temporary home and `/tmp`
 and a generated resolver file. Host home, `/run`, display and D-Bus sockets,
 profile files, host process handles and inherited socket descriptors are absent.
 The optional persistent mode exports only its dedicated application home and
-adds the private XDG paths described above. The environment is cleared.
+adds the private XDG paths described above. The optional system bundle grants
+read-only access to its validated `/opt` tree. The environment is cleared.
 
 An application-side seccomp filter permits IP/Unix sockets and route netlink,
 blocks other socket families (including VSOCK), io_uring, keyrings, cross-process
@@ -234,6 +279,19 @@ It covers persistence, separate identities, modes, symlinks and path replacement
 metadata hardlinks/FIFOs/sockets, process fencing, descriptor isolation and
 offline/proxy/disconnect behavior. These are synthetic console applications,
 not acceptance tests for Brave, Chrome or ChatGPT/Electron.
+
+For bundle tests, build `tests/fixtures/sandbox_bundle_driver` with the CLI tags.
+Run `HIDDIFY_BUNDLE_DRIVER=/absolute/path/bundle-driver python3 tests/fixtures/sandbox_bundle_namespace.py`.
+The test-only fixture uses existing delegated UID/GID mapping helpers to create
+a disposable private filesystem with root-owned synthetic `/opt` entries; the
+core still runs as the ordinary nonzero UID with no capabilities. It changes
+no host `/opt` files or settings, and production needs no mapping helper.
+The suite covers ownership/modes, symlinks/hardlinks/capabilities, special nodes,
+same-filesystem nested mounts, traversal limits, path replacement, read-only
+and privilege flags, descriptor isolation and proxy-only lifecycle.
+An opt-in installed Chrome version smoke is available through
+`HIDDIFY_BUNDLE_DRIVER=/absolute/path/bundle-driver python3 -m unittest discover -s tests -p test_sandbox_installed_bundle.py -v`.
+It uses disposable HOME data and does not start a GUI or read real profiles.
 
 ## Work required before app integration
 
