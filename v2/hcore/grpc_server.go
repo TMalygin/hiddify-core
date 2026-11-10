@@ -55,6 +55,16 @@ func Setup(params *SetupRequest, platformInterface libbox.PlatformInterface) err
 		Log(LogLevel_WARNING, LogType_CORE, "grpcServer already started")
 		return nil
 	}
+	// Persistent sandbox storage must resolve relative setup paths before the
+	// process changes directory. An empty setup path cannot authorize storage.
+	sandboxWorkingPath := ""
+	if params.WorkingDir != "" {
+		var err error
+		sandboxWorkingPath, err = filepath.Abs(params.WorkingDir)
+		if err != nil {
+			return fmt.Errorf("resolve sandbox working directory: %w", err)
+		}
+	}
 	static.BaseContext = libbox.BaseContext(platformInterface)
 	static.debug = params.Debug
 	static.globalPlatformInterface = platformInterface
@@ -79,6 +89,7 @@ func Setup(params *SetupRequest, platformInterface libbox.PlatformInterface) err
 	}
 
 	sWorkingPath = params.WorkingDir
+	sSandboxWorkingPath = sandboxWorkingPath
 	sSetupMode = params.Mode
 	cleanupLeftovers()
 	keepPreviousGoroutineSnapshot(sWorkingPath, sSetupMode)

@@ -59,6 +59,13 @@ type Managed struct {
 }
 
 func StartManaged(ctx context.Context, command []string) (*Managed, error) {
+	return StartManagedWithApplication(ctx, command, "", "")
+}
+
+// StartManagedWithApplication optionally mounts a private persistent HOME.
+// workingDirectory comes from trusted core Setup, never the launch request.
+// An empty applicationID preserves the original temporary console sandbox.
+func StartManagedWithApplication(ctx context.Context, command []string, workingDirectory, applicationID string) (*Managed, error) {
 	if err := checkRootless(); err != nil {
 		return nil, err
 	}
@@ -75,15 +82,52 @@ func StartManaged(ctx context.Context, command []string) (*Managed, error) {
 	if size > 64*1024 {
 		return nil, errors.New("sandbox command exceeds 64 KiB")
 	}
+	var storage *applicationStorage
+	var infoRead, infoWrite, blockRead, blockWrite *os.File
+	if applicationID != "" {
+		var err error
+		storage, err = openApplicationStorage(workingDirectory, applicationID)
+		if err != nil {
+			return nil, err
+		}
+		// The startup lock never enters the sandbox. A durable PID1 lease
+		// fences later launches after this core-only descriptor is closed.
+		defer storage.close()
+		infoRead, infoWrite, err = os.Pipe()
+		if err != nil {
+			return nil, err
+		}
+		defer infoRead.Close()
+		defer infoWrite.Close()
+		blockRead, blockWrite, err = os.Pipe()
+		if err != nil {
+			return nil, err
+		}
+		defer blockRead.Close()
+		defer blockWrite.Close()
+	}
 	statusRead, statusWrite, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
 	process := selfCommand("__session", command...)
 	process.ExtraFiles = []*os.File{statusWrite}
+	if storage != nil {
+		process = selfCommand("__stored_session", command...)
+		process.ExtraFiles = []*os.File{statusWrite, storage.home, infoWrite, blockRead}
+	}
 	process.SysProcAttr = rootlessAttributes()
 	input, err := process.StdinPipe()
 	if err != nil {
+		statusRead.Close()
+		statusWrite.Close()
+		return nil, err
+	}
+	if err = ctx.Err(); err == nil && storage != nil {
+		err = storage.prepare()
+	}
+	if err != nil {
+		input.Close()
 		statusRead.Close()
 		statusWrite.Close()
 		return nil, err
@@ -124,7 +168,12 @@ func StartManaged(ctx context.Context, command []string) (*Managed, error) {
 		close(m.events)
 		close(m.done)
 	}()
-	if err := <-started; err != nil {
+	err = <-started
+	if storage != nil {
+		infoWrite.Close()
+		blockRead.Close()
+	}
+	if err != nil {
 		input.Close()
 		statusRead.Close()
 		return nil, fmt.Errorf("create rootless guardian: %w", err)
@@ -140,7 +189,60 @@ func StartManaged(ctx context.Context, command []string) (*Managed, error) {
 		m.Close()
 		return nil, ctx.Err()
 	}
+	if storage != nil {
+		if err = authorizeStoredApplication(ctx, m, storage, infoRead, blockWrite); err != nil {
+			// bwrap's block-fd also unblocks on EOF. Kill the guardian and
+			// join it BEFORE the deferred writer close on every error path.
+			m.Close()
+			return nil, err
+		}
+	}
 	return m, nil
+}
+
+func authorizeStoredApplication(ctx context.Context, managed *Managed, storage *applicationStorage, infoRead, blockWrite *os.File) error {
+	type result struct {
+		pid int
+		err error
+	}
+	ready := make(chan result, 1)
+	go func() {
+		// bubblewrap closes its info FD before waiting on block-fd. Requiring
+		// EOF prevents a partial frame from authorizing an application.
+		data, err := io.ReadAll(io.LimitReader(infoRead, 4097))
+		var info struct {
+			PID int `json:"child-pid"`
+		}
+		if err == nil && len(data) > 4096 {
+			err = errors.New("bubblewrap information exceeds limit")
+		}
+		if err == nil {
+			err = json.Unmarshal(data, &info)
+		}
+		if err == nil && info.PID <= 1 {
+			err = errors.New("bubblewrap did not identify its PID namespace init")
+		}
+		ready <- result{info.PID, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-managed.Done():
+		return errors.New("sandbox guardian exited before storage authorization")
+	case info := <-ready:
+		if info.err != nil {
+			return fmt.Errorf("read sandbox namespace identity: %w", info.err)
+		}
+		if err := storage.recordRunning(info.pid); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The running fence is durable before the first application instruction.
+	_, err := blockWrite.Write([]byte{1})
+	return err
 }
 
 func rootlessAttributes() *syscall.SysProcAttr {

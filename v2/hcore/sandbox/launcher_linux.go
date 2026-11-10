@@ -38,9 +38,13 @@ func Run(args []string) int {
 	case len(args) > 0 && args[0] == "__worker":
 		code, err = worker(args[1:])
 	case len(args) > 0 && args[0] == "__child":
-		code, err = child(args[1:])
+		code, err = child(args[1:], false)
+	case len(args) > 0 && args[0] == "__stored_child":
+		code, err = child(args[1:], true)
 	case len(args) > 0 && args[0] == "__session":
-		code, err = managedSession(args[1:])
+		code, err = managedSession(args[1:], false)
+	case len(args) > 0 && args[0] == "__stored_session":
+		code, err = managedSession(args[1:], true)
 	case len(args) > 0 && args[0] == "__tunnel":
 		code, err = managedTunnel()
 	default:
@@ -307,7 +311,7 @@ func anonymousFile(content []byte) (*os.File, error) {
 	return file, nil
 }
 
-func child(command []string) (int, error) {
+func child(command []string, persistent bool) (int, error) {
 	var ready [1]byte
 	if _, err := io.ReadFull(os.Stdin, ready[:]); err != nil || ready[0] != 1 {
 		return 1, errors.New("proxy worker did not authorize sandbox exec")
@@ -340,6 +344,18 @@ func child(command []string) (int, error) {
 		"--setenv", "HOME", "/home/sandbox", "--ro-bind", "/usr", "/usr",
 		"--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/home/sandbox",
 		"--dir", "/etc", "--ro-bind-data", "3", "/etc/resolv.conf", "--chdir", "/home/sandbox"}
+	firstPrivateFD := uint(5)
+	if persistent {
+		args = append(args,
+			"--bind-fd", "5", "/home/sandbox", "--info-fd", "6", "--block-fd", "7",
+			"--setenv", "XDG_CONFIG_HOME", "/home/sandbox/.config",
+			"--setenv", "XDG_DATA_HOME", "/home/sandbox/.local/share",
+			"--setenv", "XDG_CACHE_HOME", "/home/sandbox/.cache",
+			"--setenv", "XDG_STATE_HOME", "/home/sandbox/.local/state",
+			"--tmpfs", "/run", "--perms", "0700", "--dir", "/run/sandbox",
+			"--setenv", "XDG_RUNTIME_DIR", "/run/sandbox")
+		firstPrivateFD = 8
+	}
 	// Support both merged-/usr and separate system library directories without
 	// binding the host root, /etc, /home, /run, /tmp or any session sockets.
 	for _, path := range []string{"/bin", "/sbin", "/lib", "/lib64"} {
@@ -366,9 +382,9 @@ func child(command []string) (int, error) {
 	}
 	args = append(args, "--")
 	args = append(args, command...)
-	// Only fds 3 and 4 are needed by bwrap, which consumes them before app exec.
-	// Every other non-stdio descriptor is closed across exec.
-	if err := unix.CloseRange(5, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
+	// bwrap consumes resolver/filter and, for persistent sessions, home/info/
+	// gate FDs before app exec. No lock or metadata FD enters its PID namespace.
+	if err := unix.CloseRange(firstPrivateFD, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
 		return 1, err
 	}
 	return 1, syscall.Exec("/usr/bin/bwrap", args, cleanEnvironment)

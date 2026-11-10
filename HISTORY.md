@@ -7,6 +7,10 @@ Changelog
 
 New
 ~~~
+- Add opt-in persistent application HOME/XDG data to the experimental Linux
+  RunSandbox RPC, with private per-ID directories and durable PID-namespace
+  lifetime checks before reuse. Host profiles and control files remain private;
+  GUI, browser sandbox compatibility and external-file access are not added.
 - Allow the experimental Linux rootless sandbox to use a restricted
   VLESS/Reality policy: empty/Vision flow, XUDP, fixed uTLS fingerprints and
   numeric proxy/DNS endpoints. Unsupported options fail closed; profile
