@@ -38,13 +38,25 @@ func Run(args []string) int {
 	case len(args) > 0 && args[0] == "__worker":
 		code, err = worker(args[1:])
 	case len(args) > 0 && args[0] == "__child":
-		code, err = child(args[1:], false)
+		code, err = child(args[1:], false, "")
 	case len(args) > 0 && args[0] == "__stored_child":
-		code, err = child(args[1:], true)
+		code, err = child(args[1:], true, "")
+	case len(args) > 0 && args[0] == "__bundled_child":
+		if len(args) < 3 {
+			err = errors.New("missing executable bundle or application")
+			break
+		}
+		code, err = child(args[2:], true, args[1])
 	case len(args) > 0 && args[0] == "__session":
-		code, err = managedSession(args[1:], false)
+		code, err = managedSession(args[1:], false, "")
 	case len(args) > 0 && args[0] == "__stored_session":
-		code, err = managedSession(args[1:], true)
+		code, err = managedSession(args[1:], true, "")
+	case len(args) > 0 && args[0] == "__bundled_session":
+		if len(args) < 3 {
+			err = errors.New("missing executable bundle or application")
+			break
+		}
+		code, err = managedSession(args[2:], true, args[1])
 	case len(args) > 0 && args[0] == "__tunnel":
 		code, err = managedTunnel()
 	default:
@@ -311,7 +323,7 @@ func anonymousFile(content []byte) (*os.File, error) {
 	return file, nil
 }
 
-func child(command []string, persistent bool) (int, error) {
+func child(command []string, persistent bool, bundleRoot string) (int, error) {
 	var ready [1]byte
 	if _, err := io.ReadFull(os.Stdin, ready[:]); err != nil || ready[0] != 1 {
 		return 1, errors.New("proxy worker did not authorize sandbox exec")
@@ -356,6 +368,12 @@ func child(command []string, persistent bool) (int, error) {
 			"--setenv", "XDG_RUNTIME_DIR", "/run/sandbox")
 		firstPrivateFD = 8
 	}
+	if bundleRoot != "" {
+		// No pathname source is reopened: bwrap consumes this pinned directory
+		// FD and applies recursive read-only, nosuid and nodev mount flags.
+		args = append(args, "--ro-bind-fd", "8", bundleRoot)
+		firstPrivateFD = 9
+	}
 	// Support both merged-/usr and separate system library directories without
 	// binding the host root, /etc, /home, /run, /tmp or any session sockets.
 	for _, path := range []string{"/bin", "/sbin", "/lib", "/lib64"} {
@@ -382,8 +400,8 @@ func child(command []string, persistent bool) (int, error) {
 	}
 	args = append(args, "--")
 	args = append(args, command...)
-	// bwrap consumes resolver/filter and, for persistent sessions, home/info/
-	// gate FDs before app exec. No lock or metadata FD enters its PID namespace.
+	// bwrap consumes resolver/filter and optional home/info/gate/bundle FDs
+	// before app exec. No lock or metadata FD enters its PID namespace.
 	if err := unix.CloseRange(firstPrivateFD, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
 		return 1, err
 	}

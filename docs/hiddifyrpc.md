@@ -962,6 +962,7 @@ translate.goog domain front so it reaches users behind GFW-style filters.
 | ----- | ---- | ----- | ----------- |
 | command | [string](#string) | repeated | Absolute executable followed by arguments. No shell expansion or host env. |
 | application_id | [string](#string) |  | Optional private persistent HOME identity: [a-z0-9][a-z0-9_-]{0,63}. Empty preserves the temporary console HOME. No caller-supplied host path. |
+| executable_root | [string](#string) |  | Optional read-only system bundle, requiring application_id. Canonical path below /opt, exactly the parent of command[0]; no arbitrary mount destination. |
 
 
 

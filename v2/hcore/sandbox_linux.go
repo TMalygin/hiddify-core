@@ -312,7 +312,9 @@ func (s *CoreService) RunSandbox(request *SandboxRunRequest, stream grpc.ServerS
 	mu.Lock()
 	workingDirectory := sSandboxWorkingPath
 	mu.Unlock()
-	session, err := sandbox.StartManagedWithApplication(ctx, request.Command, workingDirectory, request.ApplicationId)
+	session, err := sandbox.StartManagedWithOptions(ctx, request.Command, workingDirectory, sandbox.ApplicationOptions{
+		ID: request.ApplicationId, ExecutableRoot: request.ExecutableRoot,
+	})
 	cancel()
 	if err != nil {
 		return status.Error(codes.FailedPrecondition, err.Error())

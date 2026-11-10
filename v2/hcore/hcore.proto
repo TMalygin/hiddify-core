@@ -378,6 +378,9 @@ message SandboxRunRequest {
   // Optional private persistent HOME identity: [a-z0-9][a-z0-9_-]{0,63}.
   // Empty preserves the temporary console HOME. No caller-supplied host path.
   string application_id = 2;
+  // Optional read-only system bundle, requiring application_id. Canonical path
+  // below /opt, exactly the parent of command[0]; no arbitrary mount destination.
+  string executable_root = 3;
 }
 
 enum SandboxState {

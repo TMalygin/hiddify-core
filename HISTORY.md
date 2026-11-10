@@ -7,6 +7,10 @@ Changelog
 
 New
 ~~~
+- Allow an explicit read-only system executable bundle in the experimental
+  Linux RunSandbox RPC. Validate the selected /opt directory and its contents
+  before passing a pinned descriptor; reject unsafe metadata and nested mounts.
+  GUI/browser sandbox compatibility and user-owned bundles remain unsupported.
 - Add opt-in persistent application HOME/XDG data to the experimental Linux
   RunSandbox RPC, with private per-ID directories and durable PID-namespace
   lifetime checks before reuse. Host profiles and control files remain private;
