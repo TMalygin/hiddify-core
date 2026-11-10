@@ -7,6 +7,10 @@ Changelog
 
 New
 ~~~
+- Add an experimental authenticated Linux RunSandbox stream. Native profile
+  revocation closes the proxy worker while keeping the isolated command alive.
+  Initial support is restricted to explicit SOCKS5 leaves and numeric DNS;
+  AppImage UI and VLESS/Reality support are not included in this change.
 - Add an experimental Linux x86_64 rootless console sandbox with a dedicated
   SOCKS5-only worker, isolated child processes and supervisor revocation.
   Active-profile and AppImage UI integration are not included yet.
@@ -27,6 +31,10 @@ New
 
 Fix
 ~~~
+- Keep the accepted sandbox config after a rejected proxy selection, allowing
+  a later valid selection to restore network without restarting the application.
+- Deliver sandbox stdout/stderr before its terminal exit event, including when
+  the core is delayed; preserve nonzero application exit codes.
 - Restore the shared DNS regression profile so the committed tests compile.
 - Load the Linux CLI's core library beside the executable regardless of the
   working directory.

@@ -65,7 +65,7 @@ func StartService(ctx context.Context, in *StartRequest) (*CoreInfoResponse, err
 
 // queueStartLocked queues a start that a stop called after it cancels; queue must be locked.
 func queueStartLocked(ctx context.Context, in *StartRequest) <-chan operationResult {
-	ctx = withStopSignalLocked(ctx)
+	ctx = sandboxBegin(withStopSignalLocked(ctx))
 	return enqueueLocked(operationStart, "start", func() (*CoreInfoResponse, error) {
 		if err := contextErr(ctx); err != nil {
 			return cancelledStart(err)
@@ -277,6 +277,7 @@ func startServiceLocked(ctx context.Context, in *StartRequest) (coreResponse *Co
 		// a stop called meanwhile has already reported STOPPING; it closes the service
 		return &CoreInfoResponse{CoreState: currentCoreState(), MessageType: MessageType_INSTANCE_NOT_STARTED, Message: "start cancelled"}, errStopped
 	}
+	sandboxPublish(ctx, options)
 	startConnectivityWatcher()
 	watch.done("core is up (WAITING for a ping)")
 	return response, nil

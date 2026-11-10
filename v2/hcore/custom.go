@@ -12,6 +12,7 @@ func errorWrapper(state MessageType, err error) (*CoreInfoResponse, error) {
 }
 
 func StopAndAlert(msgType MessageType, message string) {
+	sandboxEmergencyRevoke()
 	stopConnectivityWatcher()
 	SetCoreStatus(CoreStates_STOPPED, msgType, message)
 

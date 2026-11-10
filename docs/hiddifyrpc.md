@@ -52,6 +52,8 @@
     - [OutboundInfo](#hcore-OutboundInfo)
     - [ParseRequest](#hcore-ParseRequest)
     - [ParseResponse](#hcore-ParseResponse)
+    - [SandboxEvent](#hcore-SandboxEvent)
+    - [SandboxRunRequest](#hcore-SandboxRunRequest)
     - [SelectOutboundRequest](#hcore-SelectOutboundRequest)
     - [SetSystemProxyEnabledRequest](#hcore-SetSystemProxyEnabledRequest)
     - [SetupRequest](#hcore-SetupRequest)
@@ -72,6 +74,7 @@
     - [LogLevel](#hcore-LogLevel)
     - [LogType](#hcore-LogType)
     - [MessageType](#hcore-MessageType)
+    - [SandboxState](#hcore-SandboxState)
     - [SetupMode](#hcore-SetupMode)
     - [Status](#hcore-Status)
   
@@ -929,6 +932,41 @@ translate.goog domain front so it reaches users behind GFW-style filters.
 
 
 
+<a name="hcore-SandboxEvent"></a>
+
+### SandboxEvent
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| state | [SandboxState](#hcore-SandboxState) |  |  |
+| revision | [uint64](#uint64) |  | Monotonic network permission revision, independent of GUI connection state. |
+| stdout | [bytes](#bytes) |  |  |
+| stderr | [bytes](#bytes) |  |  |
+| exit_code | [int32](#int32) |  |  |
+| message | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="hcore-SandboxRunRequest"></a>
+
+### SandboxRunRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| command | [string](#string) | repeated | Absolute executable followed by arguments. No shell expansion or host env. |
+
+
+
+
+
+
 <a name="hcore-SelectOutboundRequest"></a>
 
 ### SelectOutboundRequest
@@ -1258,6 +1296,21 @@ monitoring moves it between WAITING, STARTED and NO_AVAILABLE_PROXIES.
 
 
 
+<a name="hcore-SandboxState"></a>
+
+### SandboxState
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| SANDBOX_OFFLINE | 0 |  |
+| SANDBOX_ONLINE | 1 |  |
+| SANDBOX_ERROR | 2 |  |
+| SANDBOX_EXITED | 3 |  |
+| SANDBOX_OUTPUT | 4 |  |
+
+
+
 <a name="hcore-SetupMode"></a>
 
 ### SetupMode
@@ -1346,6 +1399,7 @@ Connection state of an outbound or endpoint (mirrors adapter.Status).
 | EnsureAdminBgService | [EnsureAdminBgServiceRequest](#hcore-EnsureAdminBgServiceRequest) | [EnsureAdminBgServiceEvent](#hcore-EnsureAdminBgServiceEvent) stream | Windows/Linux: install/start admin_bgservice if needed and start the bg core until STARTED. |
 | ListCrashReports | [.hcommon.Empty](#hcommon-Empty) | [CrashReportList](#hcore-CrashReportList) | The crash reports in this core&#39;s working directory: the archived ones (crash_reports, oom_reports) and the live stderr files that hold a crash, newest last. |
 | ExportDiagnostics | [ExportDiagnosticsRequest](#hcore-ExportDiagnosticsRequest) | [ExportDiagnosticsResponse](#hcore-ExportDiagnosticsResponse) | A zip of this core&#39;s diagnostics: the crash, OOM and power reports, the stderr and core log files, the previous run&#39;s goroutines (a snapshot the core writes every minute while connected, kept aside at the next start), the running config with servers and secrets removed, and the files the request adds. Text is scrubbed of addresses, links and secrets. Returns the zip&#39;s path, and its bytes when the request asks for them (a core in another process, whose files the app cannot read). |
+| RunSandbox | [SandboxRunRequest](#hcore-SandboxRunRequest) | [SandboxEvent](#hcore-SandboxEvent) stream | Linux only, authenticated mTLS only. Runs a console command in a rootless sandbox. Network follows the native active-profile revision. Profile disconnect/replacement keeps the command alive offline; cancelling this stream closes the entire application session. |
 
  
 

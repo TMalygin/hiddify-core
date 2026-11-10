@@ -30,7 +30,7 @@ func Restart(ctx context.Context, in *StartRequest) (*CoreInfoResponse, error) {
 // called after it cancels its start; queue must be locked.
 func queueRestartLocked(ctx context.Context, in *StartRequest) <-chan operationResult {
 	signalStopLocked()
-	ctx = withStopSignalLocked(ctx)
+	ctx = sandboxBegin(withStopSignalLocked(ctx))
 	return enqueueLocked(operationStart, "restart", func() (*CoreInfoResponse, error) {
 		log.Debug("[Service] Restarting")
 		if response, err := stopLocked(); err != nil {

@@ -548,6 +548,9 @@ func applyKeepTopLocked(ctx context.Context, generation uint64, pick []string) {
 	keepTop.Lock()
 	keepTop.ownReload = true
 	keepTop.Unlock()
+	// This automatic mutation has no explicit profile permission revision. Keep
+	// sandbox apps offline until a successful explicit restart or reload.
+	sandboxEmergencyRevoke()
 	_, err := reloadRunning(ctx, static.previousStartRequest)
 	keepTop.Lock()
 	keepTop.ownReload = false

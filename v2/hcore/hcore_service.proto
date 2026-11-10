@@ -56,6 +56,11 @@ service Core {
   // path, and its bytes when the request asks for them (a core in another process, whose files the
   // app cannot read).
   rpc ExportDiagnostics (ExportDiagnosticsRequest) returns (ExportDiagnosticsResponse);
+  // Linux only, authenticated mTLS only. Runs a console command in a rootless
+  // sandbox. Network follows the native active-profile revision. Profile
+  // disconnect/replacement keeps the command alive offline; cancelling this
+  // stream closes the entire application session.
+  rpc RunSandbox (SandboxRunRequest) returns (stream SandboxEvent);
 }
 
 
