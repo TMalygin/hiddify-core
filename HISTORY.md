@@ -7,6 +7,9 @@ Changelog
 
 New
 ~~~
+- Add an experimental Linux x86_64 rootless console sandbox with a dedicated
+  SOCKS5-only worker, isolated child processes and supervisor revocation.
+  Active-profile and AppImage UI integration are not included yet.
 - Add the MasterDNS outbound (MasterDnsVPN over public resolvers), with
   masterdns:// links, and read SlipNet slipnet:// DNS tunnel profiles
   (DNSTT, NoizDNS, VayDNS, with SSH) as dnstt outbounds. [hiddify]
