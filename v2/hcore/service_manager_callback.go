@@ -18,5 +18,6 @@ func (h *hiddifyMainServiceManager) Start(stage adapter.StartStage, _ *adapter.S
 }
 
 func (h *hiddifyMainServiceManager) Close() error {
+	sandboxEmergencyRevoke()
 	return service_manager.OnMainServiceClose()
 }

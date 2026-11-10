@@ -38,6 +38,7 @@ func Stop() (*CoreInfoResponse, error) {
 // queueStopLocked queues a stop; queue must be locked.
 func queueStopLocked() <-chan operationResult {
 	signalStopLocked()
+	sandboxBegin(context.Background())
 	return enqueueLocked(operationStop, "stop", stopLocked)
 }
 

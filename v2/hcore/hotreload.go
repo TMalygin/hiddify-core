@@ -23,7 +23,7 @@ func (s *CoreService) HotReload(ctx context.Context, in *StartRequest) (*CoreInf
 // core keeps running unchanged: restart it to apply the config.
 func HotReload(ctx context.Context, in *StartRequest) (*CoreInfoResponse, error) {
 	queue.Lock()
-	ctx = withStopSignalLocked(ctx)
+	ctx = sandboxBegin(withStopSignalLocked(ctx))
 	// HOT_RELOADING shows at once (like STOPPING), not only once the queue reaches the reload
 	setCoreStatusIf(append([]CoreStates{CoreStates_HOT_RELOADING}, running...), CoreStates_HOT_RELOADING, MessageType_EMPTY, "")
 	result := enqueueLocked(operationStart, "hotreload", func() (coreResponse *CoreInfoResponse, err error) {
@@ -120,6 +120,7 @@ func reloadRunning(ctx context.Context, in *StartRequest) (MessageType, error) {
 	static.previousStartRequest = in
 	saveLastStartRequest(in)
 	config.SaveCurrentConfig(ctx, filepath.Join(sWorkingPath, "data/current-config.json"), *options)
+	sandboxPublish(ctx, options)
 	Log(LogLevel_INFO, LogType_CORE, fmt.Sprintf("hot reload: %+v", result))
 	return MessageType_EMPTY, nil
 }

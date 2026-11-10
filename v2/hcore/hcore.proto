@@ -371,3 +371,26 @@ message EnsureAdminBgServiceEvent {
   string message = 2;
   uint32 service_port = 3;
 }
+
+message SandboxRunRequest {
+  // Absolute executable followed by arguments. No shell expansion or host env.
+  repeated string command = 1;
+}
+
+enum SandboxState {
+  SANDBOX_OFFLINE = 0;
+  SANDBOX_ONLINE = 1;
+  SANDBOX_ERROR = 2;
+  SANDBOX_EXITED = 3;
+  SANDBOX_OUTPUT = 4;
+}
+
+message SandboxEvent {
+  SandboxState state = 1;
+  // Monotonic network permission revision, independent of GUI connection state.
+  uint64 revision = 2;
+  bytes stdout = 3;
+  bytes stderr = 4;
+  int32 exit_code = 5;
+  string message = 6;
+}

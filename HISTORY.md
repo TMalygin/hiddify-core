@@ -7,6 +7,10 @@ Changelog
 
 New
 ~~~
+- Add an experimental authenticated Linux RunSandbox stream. Native profile
+  revocation closes the proxy worker while keeping the isolated command alive.
+  Initial support is restricted to explicit SOCKS5 leaves and numeric DNS;
+  AppImage UI and VLESS/Reality support are not included in this change.
 - Add an experimental Linux x86_64 rootless console sandbox with a dedicated
   SOCKS5-only worker, isolated child processes and supervisor revocation.
   Active-profile and AppImage UI integration are not included yet.

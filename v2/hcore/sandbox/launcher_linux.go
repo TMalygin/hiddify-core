@@ -39,6 +39,10 @@ func Run(args []string) int {
 		code, err = worker(args[1:])
 	case len(args) > 0 && args[0] == "__child":
 		code, err = child(args[1:])
+	case len(args) > 0 && args[0] == "__session":
+		code, err = managedSession(args[1:])
+	case len(args) > 0 && args[0] == "__tunnel":
+		code, err = managedTunnel()
 	default:
 		code, err = launch(args)
 	}
@@ -51,21 +55,21 @@ func Run(args []string) int {
 	return code
 }
 
-func launch(args []string) (int, error) {
+func checkRootless() error {
 	if runtime.GOARCH != "amd64" {
-		return 1, errors.New("prototype currently supports Linux x86_64 only")
+		return errors.New("prototype currently supports Linux x86_64 only")
 	}
 	if os.Geteuid() == 0 || os.Getuid() != os.Geteuid() || os.Getgid() != os.Getegid() {
-		return 1, errors.New("run the prototype as an ordinary unprivileged user")
+		return errors.New("run the prototype as an ordinary unprivileged user")
 	}
 	var header = unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	var caps [2]unix.CapUserData
 	if err := unix.Capget(&header, &caps[0]); err != nil {
-		return 1, err
+		return err
 	}
 	for _, value := range caps {
 		if value.Effective != 0 || value.Permitted != 0 {
-			return 1, errors.New("launcher must not carry capabilities")
+			return errors.New("launcher must not carry capabilities")
 		}
 	}
 	// Desktop sessions can carry an inert inheritable capability (for example
@@ -73,7 +77,14 @@ func launch(args []string) (int, error) {
 	// never pass it to a helper. This does not require a host privilege.
 	caps = [2]unix.CapUserData{}
 	if err := unix.Capset(&header, &caps[0]); err != nil {
-		return 1, fmt.Errorf("clear inherited capabilities: %w", err)
+		return fmt.Errorf("clear inherited capabilities: %w", err)
+	}
+	return nil
+}
+
+func launch(args []string) (int, error) {
+	if err := checkRootless(); err != nil {
+		return 1, err
 	}
 	flags := flag.NewFlagSet(commandName, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)

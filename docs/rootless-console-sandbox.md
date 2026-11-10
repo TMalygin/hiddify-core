@@ -1,9 +1,9 @@
 # Experimental rootless console sandbox
 
 Tracking: [hiddify-app issue 46](https://github.com/TMalygin/hiddify-app/issues/46).
-This is the native feasibility prototype, not a completed AppImage feature.
-It does not read the active app profile, modify the existing VPN service, or
-offer a GUI launcher. Its CLI is hidden from normal help.
+This is a native console prototype, not a completed AppImage feature. The CLI
+uses a supplied policy; the experimental RPC below follows native active-profile
+revisions. Neither offers a GUI launcher. The CLI is hidden from normal help.
 
 ## Contract
 
@@ -42,8 +42,50 @@ anonymous file; it is never reloaded from a mutable path or exposed to the app.
 
 The SOCKS server and its nominated UDP relay are trusted tunnel endpoints.
 SOCKS5 itself does not encrypt traffic. Do not point this prototype at Hiddify's
-ordinary mixed port: that server can apply DIRECT rules. Production integration
-must construct a validated proxy graph from the active profile instead.
+ordinary mixed port: that server can apply DIRECT rules.
+
+## Experimental managed RPC
+
+Tracking: [hiddify-app issue 47](https://github.com/TMalygin/hiddify-app/issues/47).
+`Core.RunSandbox(SandboxRunRequest)` is a server stream accepting an absolute
+command and arguments. It requires verified mutual TLS and an ordinary Linux
+x86_64 user. Plaintext clients are refused even if another API permits them.
+Cancelling the stream closes the application session. Profile disconnect does
+not cancel the stream: it keeps the application and its network namespace alive
+offline. Output is bounded; a stalled consumer terminates its session. There are
+at most 16 concurrent sessions, without CPU, memory or per-application quotas.
+
+Before start, restart, hot reload, stop or manual selection, the native broker
+revokes network permission and waits for each previous proxy worker to exit.
+That closes its TUN and transport sockets. Only a successfully loaded profile
+from the current operation generation may grant a new worker. A failed reload
+keeps sandbox applications offline even if the ordinary core retains its old
+config. Late completion of a cancelled operation cannot grant permission.
+Worker failure leaves the application offline; there is no automatic retry.
+Core/guardian death terminates the child session through parent-death handling.
+
+The application sees a fixed resolver address. An explicit DNS route action
+uses the profile's numeric remote resolver over proxied TCP. IPv4/IPv6 default
+routes exist only inside the child namespace and disappear with the TUN link,
+including after SIGKILL. Reconnecting replaces the worker, not the application.
+The stream reports offline/online/error/exit/output events and permission
+revisions. Application output is untrusted and must be escaped by a GUI client.
+
+This stage supports only numeric SOCKS5 leaves, selected directly or through
+explicit selectors. DIRECT, automatic groups, detours, custom dialers,
+UDP-over-TCP and domain-based DNS/proxy endpoints remain offline. Unused DIRECT
+outbounds in an ordinary profile are not copied into the worker. Profiles with
+an external Clash controller are ineligible because it bypasses the native
+selection barrier. Automatic keep-top reload revokes existing permission until
+an explicit profile operation. VLESS/Reality is the next requested transport;
+it is **not supported by this change**.
+
+The ordinary core may run its own health checks independently. The managed
+contract restricts launched applications, not all network activity of Hiddify.
+No profile secrets, host control sockets or namespace descriptors reach the
+application. The worker gets a sealed immutable policy containing credentials.
+Regenerate client stubs from the additive protobuf API before app integration;
+non-Linux platforms return `Unimplemented` for this RPC.
 
 ## Isolation and prerequisites
 
@@ -102,9 +144,9 @@ Without the explicit binary environment variable these host tests are skipped.
 
 ## Work required before app integration
 
-- Tie readiness and revocation to an exact active-profile revision in native
-  lifecycle code. Block and close old flows before switching; a selected DB row
-  or UI connection state is not sufficient. No hot policy switching exists here.
+- Validate the managed RPC lifecycle across production clients and resolve all
+  outstanding test failures before integration. A selected DB row or UI
+  connection state is not sufficient to grant network permission.
 - Validate supported proxy graphs and their bootstrap/relay transport; reject
   DIRECT and bypass rules. Only one SOCKS5 transport is tested here.
 - Package and verify the helper/dependencies for AppImage; add supported GUI

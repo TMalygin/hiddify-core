@@ -204,10 +204,15 @@ func (h *HiddifyInstance) GetSystemInfo(stream grpc.ServerStreamingServer[System
 // }
 
 func (s *CoreService) SelectOutbound(ctx context.Context, in *SelectOutboundRequest) (*hcommon.Response, error) {
+	static.lock.Lock()
+	defer static.lock.Unlock()
 	return static.SelectOutbound(in)
 }
 
 func (h *HiddifyInstance) SelectOutbound(in *SelectOutboundRequest) (*hcommon.Response, error) {
+	finish := sandboxSelection()
+	success := false
+	defer func() { finish(success) }()
 	// err := libbox.NewStandaloneCommandClient().SelectOutbound(in.GroupTag, in.OutboundTag)
 	// if err != nil {
 	// 	return &hcommon.Response{
@@ -246,6 +251,7 @@ func (h *HiddifyInstance) SelectOutbound(in *SelectOutboundRequest) (*hcommon.Re
 		err := E.New("service not started")
 		return &hcommon.Response{Code: hcommon.ResponseCode_FAILED, Message: err.Error()}, err
 	}
+	success = true
 	return &hcommon.Response{
 		Code:    hcommon.ResponseCode_OK,
 		Message: "",
