@@ -384,6 +384,9 @@ message SandboxRunRequest {
   // Opt in to the renderer sandbox for installed Chrome or Brave. Requires application_id.
   // Set executable_root to /opt/google/chrome for Chrome and leave it empty for Brave under /usr.
   bool chromium_sandbox = 4;
+  // Open a private Wayland display for this Chromium session on Linux.
+  // The core chooses the display and supervises its compositor.
+  bool private_wayland = 5;
 }
 
 enum SandboxState {

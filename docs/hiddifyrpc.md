@@ -964,6 +964,7 @@ translate.goog domain front so it reaches users behind GFW-style filters.
 | application_id | [string](#string) |  | Optional private persistent HOME identity: [a-z0-9][a-z0-9_-]{0,63}. Empty preserves the temporary console HOME. No caller-supplied host path. |
 | executable_root | [string](#string) |  | Optional read-only system bundle, requiring application_id. Canonical path below /opt, exactly the parent of command[0]; no arbitrary mount destination. |
 | chromium_sandbox | [bool](#bool) |  | Opt in to the renderer sandbox for installed Chrome or Brave. Requires application_id. Set executable_root to /opt/google/chrome for Chrome and leave it empty for Brave under /usr. |
+| private_wayland | [bool](#bool) |  | Open a private Wayland display for this Chromium session on Linux. The core chooses the display and supervises its compositor. |
 
 
 

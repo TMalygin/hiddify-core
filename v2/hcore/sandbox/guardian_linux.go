@@ -66,18 +66,21 @@ func managedSession(args []string, layout sessionLayout) (int, error) {
 	defer filter.Close()
 	application := layout.reexec("child", args)
 	application.ExtraFiles = []*os.File{resolver, filter}
-	var storageFiles []*os.File
+	var sessionFiles []*os.File
 	if layout.persistent {
-		storageFiles = []*os.File{os.NewFile(4, "application-home"), os.NewFile(5, "namespace-info"), os.NewFile(6, "storage-gate")}
+		sessionFiles = []*os.File{os.NewFile(4, "application-home"), os.NewFile(5, "namespace-info"), os.NewFile(6, "storage-gate")}
 		if layout.bundleRoot != "" {
-			storageFiles = append(storageFiles, os.NewFile(7, "executable-bundle"))
+			sessionFiles = append(sessionFiles, os.NewFile(7, "executable-bundle"))
+		}
+		if layout.wayland {
+			sessionFiles = append(sessionFiles, os.NewFile(uintptr(4+len(sessionFiles)), "private-wayland-listener"))
 		}
 		defer func() {
-			for _, file := range storageFiles {
+			for _, file := range sessionFiles {
 				file.Close()
 			}
 		}()
-		application.ExtraFiles = append([]*os.File{resolver, filter}, storageFiles...)
+		application.ExtraFiles = append(application.ExtraFiles, sessionFiles...)
 	}
 	application.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET, Pdeathsig: syscall.SIGKILL}
 	application.Stdout, application.Stderr = os.Stdout, os.Stderr
@@ -89,8 +92,8 @@ func managedSession(args []string, layout sessionLayout) (int, error) {
 	if err = application.Start(); err != nil {
 		return 1, fmt.Errorf("create application namespace: %w", err)
 	}
-	for _, file := range storageFiles {
-		file.Close() // only bwrap retains the home/info/gate/bundle copies
+	for _, file := range sessionFiles {
+		file.Close() // The child owns the copies consumed by bwrap.
 	}
 	appDone := make(chan error, 1)
 	go func() { appDone <- application.Wait() }()

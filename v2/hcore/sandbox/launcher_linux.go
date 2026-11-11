@@ -39,18 +39,21 @@ func Run(args []string) int {
 		mode = args[0]
 	}
 	switch mode {
+	case "__wayland_runtime":
+		code, err = manageWaylandRuntime(args[1:])
 	case "__worker":
 		code, err = worker(args[1:])
 	case "__child", "__stored_child":
 		code, err = child(args[1:], sessionLayout{persistent: mode == "__stored_child"})
 	case "__session", "__stored_session":
 		code, err = managedSession(args[1:], sessionLayout{persistent: mode == "__stored_session"})
-	case "__bundled_child", "__bundled_session", "__chromium_child", "__chromium_session":
+	case "__bundled_child", "__bundled_session", "__chromium_child", "__chromium_session", "__wayland_child", "__wayland_session":
 		if len(args) < 3 {
 			err = errors.New("missing bundle argument or application")
 			break
 		}
-		layout := sessionLayout{persistent: true, bundleRoot: args[1], chromium: strings.HasPrefix(mode, "__chromium_")}
+		wayland := strings.HasPrefix(mode, "__wayland_")
+		layout := sessionLayout{persistent: true, bundleRoot: args[1], chromium: wayland || strings.HasPrefix(mode, "__chromium_"), wayland: wayland}
 		if strings.HasSuffix(mode, "_child") {
 			code, err = child(args[2:], layout)
 		} else {
@@ -387,6 +390,26 @@ func child(command []string, layout sessionLayout) (int, error) {
 		args = append(args, "--ro-bind-fd", "8", layout.bundleRoot)
 		firstPrivateFD = 9
 	}
+	if layout.wayland {
+		args = append(args, "--ro-bind-fd", fmt.Sprint(firstPrivateFD), "/run/sandbox/"+privateWaylandSocket,
+			"--setenv", "WAYLAND_DISPLAY", privateWaylandSocket)
+		firstPrivateFD++
+		command = append([]string{command[0], "--ozone-platform=wayland"}, command[1:]...)
+	}
+	args, err = appendSystemLibraryMounts(args)
+	if err != nil {
+		return 1, err
+	}
+	args = append(args, "--")
+	args = append(args, command...)
+	// bwrap consumes the explicitly passed descriptors before application exec.
+	if err := unix.CloseRange(firstPrivateFD, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
+		return 1, err
+	}
+	return 1, syscall.Exec("/usr/bin/bwrap", args, cleanEnvironment)
+}
+
+func appendSystemLibraryMounts(args []string) ([]string, error) {
 	// Support both merged-/usr and separate system library directories without
 	// binding the host root, /etc, /home, /run, /tmp or any session sockets.
 	for _, path := range []string{"/bin", "/sbin", "/lib", "/lib64"} {
@@ -395,28 +418,21 @@ func child(command []string, layout sessionLayout) (int, error) {
 			continue
 		}
 		if err != nil {
-			return 1, err
+			return nil, err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			target, err := os.Readlink(path)
 			if err != nil {
-				return 1, err
+				return nil, err
 			}
 			resolved, err := filepath.EvalSymlinks(path)
 			if err != nil || !strings.HasPrefix(resolved, "/usr/") {
-				return 1, errors.New("system directory symlink must resolve inside /usr")
+				return nil, errors.New("system directory symlink must resolve inside /usr")
 			}
 			args = append(args, "--symlink", target, path)
 		} else {
 			args = append(args, "--ro-bind", path, path)
 		}
 	}
-	args = append(args, "--")
-	args = append(args, command...)
-	// bwrap consumes resolver/filter and optional home/info/gate/bundle FDs
-	// before app exec. No lock or metadata FD enters its PID namespace.
-	if err := unix.CloseRange(firstPrivateFD, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
-		return 1, err
-	}
-	return 1, syscall.Exec("/usr/bin/bwrap", args, cleanEnvironment)
+	return args, nil
 }
