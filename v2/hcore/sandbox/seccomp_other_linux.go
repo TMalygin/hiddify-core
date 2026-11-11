@@ -7,6 +7,6 @@ import (
 	"os"
 )
 
-func applicationFilter() (*os.File, error) {
+func applicationFilter(_ bool) (*os.File, error) {
 	return nil, errors.New("sandbox syscall policy is currently validated only on Linux x86_64")
 }

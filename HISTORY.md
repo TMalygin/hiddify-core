@@ -7,6 +7,8 @@ Changelog
 
 New
 ~~~
+- Add an opt-in Linux RunSandbox policy for installed Chrome and Brave to
+  start their own sandboxed renderer processes inside a proxy-only session.
 - Allow an explicit read-only system executable bundle in the experimental
   Linux RunSandbox RPC. Validate the selected /opt directory and its contents
   before passing a pinned descriptor; reject unsafe metadata and nested mounts.

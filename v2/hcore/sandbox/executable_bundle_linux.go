@@ -38,6 +38,33 @@ func openExecutableBundle(ctx context.Context, rootPath string, command []string
 		strings.IndexByte(command[0], 0) >= 0 || filepath.Dir(command[0]) != rootPath {
 		return nil, errors.New("selected executable must be a canonical path directly inside executable_root")
 	}
+	directory, err := openSystemDirectory(ctx, rootPath)
+	if err != nil {
+		return nil, err
+	}
+	bundle := &executableBundle{directory: directory, path: rootPath}
+	if err := validateBundleTree(ctx, directory, filepath.Base(command[0])); err != nil {
+		bundle.close()
+		return nil, err
+	}
+	return bundle, nil
+}
+
+func validateBundleTree(ctx context.Context, directory *os.File, selected string) error {
+	entries := 0
+	selectedFound := false
+	if err := walkExecutableBundle(ctx, directory, "", 0, selected, &entries, &selectedFound); err != nil {
+		return err
+	}
+	if !selectedFound {
+		return errors.New("selected executable is missing from executable_root")
+	}
+	return ctx.Err()
+}
+
+// Both callers supply a canonical absolute path. Check every ancestor before
+// passing a system package directory to the scanner or the ELF reader.
+func openSystemDirectory(ctx context.Context, rootPath string) (*os.File, error) {
 	fd, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open executable bundle ancestors: %w", err)
@@ -73,20 +100,9 @@ func openExecutableBundle(ctx context.Context, rootPath string, command []string
 		current.Close()
 		current = next
 	}
-	entries := 0
-	selectedFound := false
-	if err := walkExecutableBundle(ctx, current, "", 0, filepath.Base(command[0]), &entries, &selectedFound); err != nil {
-		return nil, err
-	}
-	if !selectedFound {
-		return nil, errors.New("selected executable is missing from executable_root")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	bundle := &executableBundle{directory: current, path: rootPath}
-	current = nil // ownership transfers to the launch, including error cleanup
-	return bundle, nil
+	directory := current
+	current = nil
+	return directory, nil
 }
 
 func openExecutableBundleAt(parent *os.File, name string, flags int, noMounts bool) (*os.File, error) {
@@ -185,30 +201,37 @@ func validateExecutableBundleEntry(ctx context.Context, parent *os.File, name, r
 		unusedSelected := false
 		return walkExecutableBundle(ctx, directory, relative, depth, "", total, &unusedSelected)
 	case unix.S_IFREG:
-		if stat.Nlink != 1 {
-			return errors.New("bundle files must have exactly one hard link")
-		}
-		if selected && (stat.Mode&0111 == 0 || stat.Mode&06000 != 0) {
-			return errors.New("selected executable must be executable without setuid or setgid")
-		}
-		// Reopen the already pinned regular inode, not its mutable pathname.
-		// This also refuses unreadable resources without reading their data.
-		fd, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", file.Fd()), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		readable, err := openRegularBundleFile(file, &stat, selected)
 		if err != nil {
-			return fmt.Errorf("open readable bundle file: %w", err)
+			return err
 		}
-		defer unix.Close(fd)
-		_, err = unix.Fgetxattr(fd, "security.capability", nil)
-		if err == nil {
-			return errors.New("bundle file capabilities are not allowed")
-		}
-		if !errors.Is(err, unix.ENODATA) && !errors.Is(err, unix.ENOTSUP) {
-			return fmt.Errorf("check bundle file capabilities: %w", err)
-		}
-		return nil
+		return readable.Close()
 	default:
 		return errors.New("bundle may contain only directories and regular files; symlinks and special nodes are not allowed")
 	}
+}
+
+// The caller has pinned and classified this inode as a regular file.
+func openRegularBundleFile(file *os.File, stat *unix.Stat_t, selected bool) (*os.File, error) {
+	if stat.Nlink != 1 {
+		return nil, errors.New("bundle files must have exactly one hard link")
+	}
+	if selected && (stat.Mode&0111 == 0 || stat.Mode&06000 != 0) {
+		return nil, errors.New("selected executable must be executable without setuid or setgid")
+	}
+	fd, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", file.Fd()), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open readable bundle file: %w", err)
+	}
+	_, err = unix.Fgetxattr(fd, "security.capability", nil)
+	if errors.Is(err, unix.ENODATA) || errors.Is(err, unix.ENOTSUP) {
+		return os.NewFile(uintptr(fd), file.Name()), nil
+	}
+	unix.Close(fd)
+	if err == nil {
+		return nil, errors.New("bundle file capabilities are not allowed")
+	}
+	return nil, fmt.Errorf("check bundle file capabilities: %w", err)
 }
 
 func (bundle *executableBundle) close() {
