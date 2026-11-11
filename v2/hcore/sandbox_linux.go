@@ -13,8 +13,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/hiddify/hiddify-core/v2/hcore/sandbox"
+	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/protocol/group"
 	"google.golang.org/grpc"
@@ -24,7 +26,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Snapshots only contain supported leaf policies and explicit selector tags.
+// Snapshots contain proxy definitions and explicit selector tags. A Reality
+// hostname remains a template until the selected outbound authenticates a peer.
 // Ordinary profile rules, DIRECT, inbounds, remote rule sets, and bootstrap DNS
 // are never passed to the isolated worker. Unsupported selections stay offline.
 type sandboxProfile struct {
@@ -45,6 +48,8 @@ var sandboxLeases = struct {
 	offlineReason string
 	sessions      map[*sandbox.Managed]struct{}
 	reserved      int
+	lastEngine    weak.Pointer[box.Box]
+	watch         *sandboxPeerWatch
 }{sessions: make(map[*sandbox.Managed]struct{})}
 
 type sandboxGenerationKey struct{}
@@ -74,7 +79,12 @@ func sandboxRevokeLocked(ctx context.Context) context.Context {
 	sandboxLeases.policy = nil
 	sandboxLeases.offlineReason = ""
 	sessions := sandboxSessionsLocked()
+	watch := sandboxLeases.watch
+	sandboxLeases.watch = nil
 	sandboxLeases.Unlock()
+	if watch != nil {
+		watch.unsubscribe()
+	}
 	sandboxUpdate(sessions, revision, nil)
 	return context.WithValue(ctx, sandboxGenerationKey{}, generation)
 }
@@ -138,7 +148,7 @@ func sandboxPublish(ctx context.Context, options *option.Options) {
 			profile.selectors[tag] = member
 			continue
 		}
-		policy, err := sandboxLeaf(outbound)
+		policy, err := sandboxProfileLeaf(outbound)
 		if err != nil {
 			profile.errors[tag] = err
 		} else {
@@ -162,7 +172,11 @@ func sandboxLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
 		return nil, errors.New("sandbox DNS settings are unavailable")
 	}
 	if outbound.Type == "vless" {
-		return sandboxRealityLeaf(outbound)
+		policy, err := sandboxRealityDefinition(outbound)
+		if err != nil {
+			return nil, err
+		}
+		return sandboxWorkerPolicy(*policy)
 	}
 	socks, ok := outbound.Options.(*option.SOCKSOutboundOptions)
 	if outbound.Type != "socks" || !ok || socks == nil {
@@ -175,15 +189,19 @@ func sandboxLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
 	if version == "" {
 		version = "5"
 	}
-	content, err := json.Marshal(sandbox.Policy{Type: "socks", Version: version, Server: socks.Server, ServerPort: socks.ServerPort,
+	return sandboxWorkerPolicy(sandbox.Policy{Type: "socks", Version: version, Server: socks.Server, ServerPort: socks.ServerPort,
 		DNSServer: static.HiddifyOptions.RemoteDnsAddress, Username: socks.Username, Password: socks.Password})
+}
+
+func sandboxWorkerPolicy(policy sandbox.Policy) (*sandbox.Policy, error) {
+	content, err := json.Marshal(policy)
 	if err != nil {
 		return nil, err
 	}
 	return sandbox.ParsePolicy(bytes.NewReader(content))
 }
 
-func sandboxRealityLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
+func sandboxRealityDefinition(outbound option.Outbound) (*sandbox.Policy, error) {
 	vless, ok := outbound.Options.(*option.VLESSOutboundOptions)
 	if !ok || vless == nil || vless.TLS == nil || vless.TLS.UTLS == nil || vless.TLS.Reality == nil {
 		return nil, errors.New("sandbox VLESS requires explicit Reality and uTLS settings")
@@ -220,16 +238,12 @@ func sandboxRealityLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
 	if err != nil {
 		return nil, err
 	}
-	content, err := json.Marshal(sandbox.Policy{
+	return &sandbox.Policy{
 		Type: "vless", Server: vless.Server, ServerPort: vless.ServerPort,
 		DNSServer: dnsAddress, UUID: vless.UUID, Flow: vless.Flow,
 		ServerName: tls.ServerName, PublicKey: tls.Reality.PublicKey, ShortID: tls.Reality.ShortID,
 		Fingerprint: tls.UTLS.Fingerprint, PacketEncoding: "xudp", KeyShare: tls.Reality.KeyShare,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return sandbox.ParsePolicy(bytes.NewReader(content))
+	}, nil
 }
 
 // The worker's resolver uses TCP/53 through its only outbound. Accept that
@@ -255,9 +269,9 @@ func sandboxRealityDNS(configured string) (string, error) {
 
 // Resolve only explicit selectors against the live engine, never its global
 // STARTED flag (which may mean an unselected proxy answered a health check).
-func (p *sandboxProfile) selected() (*sandbox.Policy, error) {
+func (p *sandboxProfile) selectedTag() (string, error) {
 	if p.blocked != nil {
-		return nil, p.blocked
+		return "", p.blocked
 	}
 	tag := p.final
 	seen := make(map[string]bool)
@@ -269,63 +283,96 @@ func (p *sandboxProfile) selected() (*sandbox.Policy, error) {
 		// Clash can change a selector without entering sandboxSelection. Only
 		// singleton selectors cannot change the authorized route in this way.
 		if p.externalController && member == "" {
-			return nil, errors.New("external Clash control requires a single VLESS/Reality exit at every selector")
+			return "", errors.New("external Clash control requires a single VLESS/Reality exit at every selector")
 		}
 		if seen[tag] {
-			return nil, errors.New("sandbox selector cycle")
+			return "", errors.New("sandbox selector cycle")
 		}
 		seen[tag] = true
 		box := static.Box()
 		if box == nil {
-			return nil, errors.New("core is not running")
+			return "", errors.New("core is not running")
 		}
 		outbound, ok := box.Outbound().Outbound(tag)
 		if !ok {
-			return nil, errors.New("sandbox selector is unavailable")
+			return "", errors.New("sandbox selector is unavailable")
 		}
 		selector, ok := outbound.(*group.Selector)
 		if !ok {
-			return nil, errors.New("sandbox selection is not explicit")
+			return "", errors.New("sandbox selection is not explicit")
 		}
 		selected := selector.Selected("tcp")
 		if selected == nil {
-			return nil, errors.New("sandbox selector has no proxy")
+			return "", errors.New("sandbox selector has no proxy")
 		}
 		tag = selected.Tag()
 		if p.externalController && tag != member {
-			return nil, errors.New("the selected proxy does not match the sole configured exit")
+			return "", errors.New("the selected proxy does not match the sole configured exit")
 		}
 	}
-	if policy := p.leaves[tag]; policy != nil {
-		if p.externalController {
-			if policy.Type != "vless" {
-				return nil, errors.New("external Clash control requires a single VLESS/Reality exit")
-			}
-			box := static.Box()
-			if box == nil {
-				return nil, errors.New("core is not running")
-			}
-			live, ok := box.Outbound().Outbound(tag)
-			if !ok || live.Type() != policy.Type {
-				return nil, errors.New("the selected proxy does not match the running Reality exit")
-			}
+	return tag, nil
+}
+
+func (p *sandboxProfile) selected() (*sandbox.Policy, verifiedRealityPeers, error) {
+	tag, err := p.selectedTag()
+	if err != nil {
+		return nil, nil, err
+	}
+	policy := p.leaves[tag]
+	if policy == nil {
+		if err := p.errors[tag]; err != nil {
+			return nil, nil, err
 		}
-		return policy, nil
+		return nil, nil, errors.New("sandbox has no supported selected proxy")
 	}
-	if err := p.errors[tag]; err != nil {
-		return nil, err
+	domain := policy.Type == "vless" && sandbox.IsRealityDomain(policy.Server)
+	if !p.externalController && !domain {
+		return policy, nil, nil
 	}
-	return nil, errors.New("sandbox has no supported selected proxy")
+	if policy.Type != "vless" {
+		return nil, nil, errors.New("external Clash control requires a single VLESS/Reality exit")
+	}
+	box := static.Box()
+	if box == nil {
+		return nil, nil, errors.New("core is not running")
+	}
+	live, ok := box.Outbound().Outbound(tag)
+	if !ok || live.Type() != policy.Type {
+		return nil, nil, errors.New("the selected proxy does not match the running Reality exit")
+	}
+	if domain {
+		source, ok := live.(verifiedRealityPeers)
+		if !ok {
+			return nil, nil, errors.New("the selected Reality exit cannot report a verified peer")
+		}
+		return policy, source, nil
+	}
+	return policy, nil, nil
 }
 
 func sandboxPublishProfile(ctx context.Context, profile *sandboxProfile) {
 	generation, _ := ctx.Value(sandboxGenerationKey{}).(uint64)
-	policy, err := profile.selected()
+	policy, source, err := profile.selected()
+	engine := weak.Make(static.Box())
 	sandboxLeases.Lock()
 	if generation != sandboxLeases.generation || contextErr(ctx) != nil {
 		sandboxLeases.Unlock()
 		return
 	}
+	// Only the first publication of a new engine may replay a connection
+	// authenticated during startup. Reloads and selections on the same engine
+	// require a fresh connection, even when they return to the same outbound.
+	replay := engine != sandboxLeases.lastEngine
+	sandboxLeases.lastEngine = engine
+	previousWatch := sandboxLeases.watch
+	var watch *sandboxPeerWatch
+	if source != nil {
+		updates, unwatch := source.WatchVerifiedRealityPeer(replay)
+		watch = &sandboxPeerWatch{generation: generation, template: *policy, updates: updates, unsubscribe: unwatch}
+		policy = nil
+		err = errors.New(sandboxWaitingForPeer)
+	}
+	sandboxLeases.watch = watch
 	sandboxLeases.profile = profile
 	sandboxLeases.policy = policy
 	sandboxLeases.offlineReason = ""
@@ -338,6 +385,12 @@ func sandboxPublishProfile(ctx context.Context, profile *sandboxProfile) {
 	revision := sandboxLeases.revision
 	sessions := sandboxSessionsLocked()
 	sandboxLeases.Unlock()
+	if previousWatch != nil {
+		previousWatch.unsubscribe()
+	}
+	if watch != nil {
+		go watch.run()
+	}
 	if err != nil {
 		Log(LogLevel_INFO, LogType_CORE, "sandbox remains offline: ", err.Error())
 	}
@@ -365,15 +418,7 @@ func sandboxEmergencyRevoke() {
 		sandboxLeases.Unlock()
 		return
 	}
-	sandboxLeases.generation++
-	sandboxLeases.revision++
-	revision := sandboxLeases.revision
-	sandboxLeases.profile = nil
-	sandboxLeases.policy = nil
-	sandboxLeases.offlineReason = ""
-	sessions := sandboxSessionsLocked()
-	sandboxLeases.Unlock()
-	sandboxUpdate(sessions, revision, nil)
+	sandboxBeginLocked(context.Background())
 }
 
 func (s *CoreService) RunSandbox(request *SandboxRunRequest, stream grpc.ServerStreamingServer[SandboxEvent]) error {

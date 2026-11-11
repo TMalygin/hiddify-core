@@ -7,6 +7,8 @@ Changelog
 
 New
 ~~~
+- Allow isolated Linux applications to use a VLESS/Reality proxy hostname
+  after the selected foreground connection authenticates its physical peer.
 - Allow isolated Linux applications to use an unambiguous VLESS/Reality
   profile with Hiddify's default Clash controller and numeric TCP DNS.
   Report the reason when an active profile leaves an application offline.

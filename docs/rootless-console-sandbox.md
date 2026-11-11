@@ -106,7 +106,7 @@ exit codes are preserved; a guardian failure is reported as an error instead.
 
 This stage supports numeric SOCKS5 leaves and the VLESS/Reality subset above,
 selected directly or through explicit selectors. DIRECT, automatic groups, detours, custom dialers,
-UDP-over-TCP and domain-based DNS/proxy endpoints remain offline. Unused DIRECT
+UDP-over-TCP, SOCKS5 proxy hostnames and DNS resolver hostnames remain offline. Unused DIRECT
 outbounds in an ordinary profile are not copied into the worker.
 
 With Hiddify's default external Clash controller enabled, a supported VLESS/Reality
@@ -118,6 +118,19 @@ controller could change its member outside the core's revocation barrier. The
 managed worker uses only the verified VLESS exit, never the ordinary routing rules.
 Disconnecting or switching profiles revokes that worker; the application keeps
 running. An eligible replacement profile can grant it a new worker.
+
+A managed VLESS/Reality profile can use an ASCII proxy hostname. The application
+stays offline until ordinary TCP traffic through the selected foreground exit
+authenticates a physical IP and receives a VLESS response. The worker then uses
+that exact IP and configured port, with the profile's UUID, Reality key and TLS
+server name. The launcher performs no lookup or connection to bootstrap the
+hostname. The sealed CLI policy still requires a numeric proxy endpoint.
+
+The first publication of a newly started engine can accept its own connection
+established during startup. A selection or reload on the same engine requires a
+new confirmation after the change, even when the selected exit or IP matches
+its previous value. A changed authenticated IP replaces the worker. Repeated
+confirmations of the same IP preserve the worker's current state.
 
 For managed VLESS, a numeric TCP resolver such as `tcp://8.8.8.8` (optionally
 with port 53) uses the worker's existing TCP DNS transport through the proxy.
@@ -433,7 +446,7 @@ browser, network and display isolation, cancellation and unavailable displays.
   connection state is not sufficient to grant network permission.
 - Validate supported proxy graphs and their bootstrap/relay transport; reject
   DIRECT and bypass rules. Support is restricted to the SOCKS5 and VLESS/Reality
-  subsets above; other transports and hostname bootstrap need separate work.
+  subsets above. Other transports and independent DNS bootstrap need separate work.
 - Package and verify the helper/dependencies for AppImage; integrate persistent
   data into a supported GUI launcher. Shared host X11/D-Bus and browser
   single-instance forwarding must not become escape paths.
