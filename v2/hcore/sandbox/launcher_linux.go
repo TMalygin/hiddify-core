@@ -34,30 +34,29 @@ func Run(args []string) int {
 	defer runtime.UnlockOSThread()
 	var code int
 	var err error
-	switch {
-	case len(args) > 0 && args[0] == "__worker":
+	var mode string
+	if len(args) > 0 {
+		mode = args[0]
+	}
+	switch mode {
+	case "__worker":
 		code, err = worker(args[1:])
-	case len(args) > 0 && args[0] == "__child":
-		code, err = child(args[1:], false, "")
-	case len(args) > 0 && args[0] == "__stored_child":
-		code, err = child(args[1:], true, "")
-	case len(args) > 0 && args[0] == "__bundled_child":
+	case "__child", "__stored_child":
+		code, err = child(args[1:], sessionLayout{persistent: mode == "__stored_child"})
+	case "__session", "__stored_session":
+		code, err = managedSession(args[1:], sessionLayout{persistent: mode == "__stored_session"})
+	case "__bundled_child", "__bundled_session", "__chromium_child", "__chromium_session":
 		if len(args) < 3 {
-			err = errors.New("missing executable bundle or application")
+			err = errors.New("missing bundle argument or application")
 			break
 		}
-		code, err = child(args[2:], true, args[1])
-	case len(args) > 0 && args[0] == "__session":
-		code, err = managedSession(args[1:], false, "")
-	case len(args) > 0 && args[0] == "__stored_session":
-		code, err = managedSession(args[1:], true, "")
-	case len(args) > 0 && args[0] == "__bundled_session":
-		if len(args) < 3 {
-			err = errors.New("missing executable bundle or application")
-			break
+		layout := sessionLayout{persistent: true, bundleRoot: args[1], chromium: strings.HasPrefix(mode, "__chromium_")}
+		if strings.HasSuffix(mode, "_child") {
+			code, err = child(args[2:], layout)
+		} else {
+			code, err = managedSession(args[2:], layout)
 		}
-		code, err = managedSession(args[2:], true, args[1])
-	case len(args) > 0 && args[0] == "__tunnel":
+	case "__tunnel":
 		code, err = managedTunnel()
 	default:
 		code, err = launch(args)
@@ -227,7 +226,7 @@ func worker(args []string) (code int, resultErr error) {
 		return 1, err
 	}
 	defer resolver.Close()
-	filter, err := applicationFilter()
+	filter, err := applicationFilter(false)
 	if err != nil {
 		return 1, err
 	}
@@ -323,7 +322,7 @@ func anonymousFile(content []byte) (*os.File, error) {
 	return file, nil
 }
 
-func child(command []string, persistent bool, bundleRoot string) (int, error) {
+func child(command []string, layout sessionLayout) (int, error) {
 	var ready [1]byte
 	if _, err := io.ReadFull(os.Stdin, ready[:]); err != nil || ready[0] != 1 {
 		return 1, errors.New("proxy worker did not authorize sandbox exec")
@@ -350,14 +349,28 @@ func child(command []string, persistent bool, bundleRoot string) (int, error) {
 	}
 	input.Close()
 	args := []string{"bwrap", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-		"--disable-userns", "--assert-userns-disabled", "--cap-drop", "ALL", "--new-session", "--die-with-parent",
+		"--cap-drop", "ALL", "--new-session", "--die-with-parent",
 		"--seccomp", "4",
 		"--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "LANG", "C.UTF-8",
 		"--setenv", "HOME", "/home/sandbox", "--ro-bind", "/usr", "/usr",
 		"--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/home/sandbox",
 		"--dir", "/etc", "--ro-bind-data", "3", "/etc/resolv.conf", "--chdir", "/home/sandbox"}
+	if layout.chromium {
+		// Keep PID-local uid_map/gid_map available to the zygote. The browser
+		// does not need any host kernel or network tuning interfaces.
+		for _, subtree := range []string{"/proc/sys", "/proc/irq", "/proc/bus"} {
+			args = append(args, "--tmpfs", subtree, "--remount-ro", subtree)
+		}
+		if _, err := os.Stat("/proc/sysrq-trigger"); err == nil {
+			args = append(args, "--ro-bind", "/dev/null", "/proc/sysrq-trigger")
+		} else if !os.IsNotExist(err) {
+			return 1, err
+		}
+	} else {
+		args = append(args, "--disable-userns", "--assert-userns-disabled")
+	}
 	firstPrivateFD := uint(5)
-	if persistent {
+	if layout.persistent {
 		args = append(args,
 			"--bind-fd", "5", "/home/sandbox", "--info-fd", "6", "--block-fd", "7",
 			"--setenv", "XDG_CONFIG_HOME", "/home/sandbox/.config",
@@ -368,10 +381,10 @@ func child(command []string, persistent bool, bundleRoot string) (int, error) {
 			"--setenv", "XDG_RUNTIME_DIR", "/run/sandbox")
 		firstPrivateFD = 8
 	}
-	if bundleRoot != "" {
+	if layout.bundleRoot != "" {
 		// No pathname source is reopened: bwrap consumes this pinned directory
 		// FD and applies recursive read-only, nosuid and nodev mount flags.
-		args = append(args, "--ro-bind-fd", "8", bundleRoot)
+		args = append(args, "--ro-bind-fd", "8", layout.bundleRoot)
 		firstPrivateFD = 9
 	}
 	// Support both merged-/usr and separate system library directories without

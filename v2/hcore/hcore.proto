@@ -381,6 +381,9 @@ message SandboxRunRequest {
   // Optional read-only system bundle, requiring application_id. Canonical path
   // below /opt, exactly the parent of command[0]; no arbitrary mount destination.
   string executable_root = 3;
+  // Opt in to the renderer sandbox for installed Chrome or Brave. Requires application_id.
+  // Set executable_root to /opt/google/chrome for Chrome and leave it empty for Brave under /usr.
+  bool chromium_sandbox = 4;
 }
 
 enum SandboxState {

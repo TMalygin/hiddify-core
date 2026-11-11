@@ -217,6 +217,11 @@ func workerOutbound(policy *proxyPolicy) option.Outbound {
 	}}
 }
 
+var (
+	sandboxTunIPv4 = netip.MustParsePrefix("172.31.255.1/30")
+	sandboxTunIPv6 = netip.MustParsePrefix("fd7a:115c:a1e0::1/126")
+)
+
 func workerOptions(policy *proxyPolicy, namespace string) option.Options {
 	return option.Options{
 		Log: &option.LogOptions{Level: "error", DisableColor: true},
@@ -232,8 +237,7 @@ func workerOptions(policy *proxyPolicy, namespace string) option.Options {
 			InterfaceName: "hiddify_sbox",
 			NetNs:         namespace,
 			Address: badoption.Listable[netip.Prefix]{
-				netip.MustParsePrefix("172.31.255.1/30"),
-				netip.MustParsePrefix("fd7a:115c:a1e0::1/126"),
+				sandboxTunIPv4, sandboxTunIPv6,
 			},
 			MTU: 1500, AutoRoute: true, StrictRoute: true,
 			// DNS packets are ordinary proxied UDP/TCP. No local resolver or DNS

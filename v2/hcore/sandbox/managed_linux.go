@@ -72,8 +72,33 @@ func StartManagedWithApplication(ctx context.Context, command []string, workingD
 // ApplicationOptions describes explicit filesystem capabilities. Host paths
 // cannot select writable data roots; ID is resolved beneath core Setup's path.
 type ApplicationOptions struct {
-	ID             string
-	ExecutableRoot string
+	ID              string
+	ExecutableRoot  string
+	ChromiumSandbox bool
+}
+
+// Reexec arguments carry the validated layout. Directory descriptors stay in
+// ExtraFiles and never become caller-supplied host paths.
+type sessionLayout struct {
+	persistent bool
+	bundleRoot string
+	chromium   bool
+}
+
+func (layout sessionLayout) reexec(role string, command []string) *exec.Cmd {
+	mode := "__"
+	switch {
+	case layout.chromium:
+		mode += "chromium_"
+	case layout.bundleRoot != "":
+		mode += "bundled_"
+	case layout.persistent:
+		mode += "stored_"
+	}
+	if layout.chromium || layout.bundleRoot != "" {
+		command = append([]string{layout.bundleRoot}, command...)
+	}
+	return selfCommand(mode+role, command...)
 }
 
 func StartManagedWithOptions(ctx context.Context, command []string, workingDirectory string, options ApplicationOptions) (*Managed, error) {
@@ -93,6 +118,11 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	if size > 64*1024 {
 		return nil, errors.New("sandbox command exceeds 64 KiB")
 	}
+	if options.ChromiumSandbox {
+		if err := validateChromiumRequest(command, options); err != nil {
+			return nil, err
+		}
+	}
 	var bundle *executableBundle
 	if options.ExecutableRoot != "" {
 		if !validApplicationID(options.ID) {
@@ -106,6 +136,11 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 			return nil, err
 		}
 		defer bundle.close()
+	}
+	if options.ChromiumSandbox {
+		if err := validateChromiumExecutable(ctx, command[0], bundle); err != nil {
+			return nil, err
+		}
 	}
 	var storage *applicationStorage
 	var infoRead, infoWrite, blockRead, blockWrite *os.File
@@ -135,18 +170,15 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	if err != nil {
 		return nil, err
 	}
-	mode, arguments := "__session", command
+	layout := sessionLayout{persistent: storage != nil, bundleRoot: options.ExecutableRoot, chromium: options.ChromiumSandbox}
+	process := layout.reexec("session", command)
 	files := []*os.File{statusWrite}
 	if storage != nil {
-		mode = "__stored_session"
 		files = append(files, storage.home, infoWrite, blockRead)
 	}
 	if bundle != nil {
-		mode = "__bundled_session"
-		arguments = append([]string{bundle.path}, command...)
 		files = append(files, bundle.directory)
 	}
-	process := selfCommand(mode, arguments...)
 	process.ExtraFiles = files
 	process.SysProcAttr = rootlessAttributes()
 	input, err := process.StdinPipe()

@@ -208,9 +208,50 @@ The host root and package installer remain trusted. A directory descriptor pins
 an inode, not an immutable recursive snapshot; a trusted package update can
 change the contents after validation. User-owned bundles, child AppImages,
 symlink-based or nested executable layouts need a separate import/validation
-design. This capability does not make a browser GUI or its native renderer
-sandbox compatible; no `--no-sandbox` workaround is added. Regenerate client
+design. The optional Chromium renderer policy is described below. Regenerate client
 stubs and pin a compatible core before relying on the additive field.
+
+### Native Chromium renderers
+
+`SandboxRunRequest.chromium_sandbox` opts an authenticated persistent session
+into the Linux x86_64 Chromium namespace policy. Use a private `application_id`
+for each browser. The currently supported package entry points are:
+
+| command[0] | executable_root |
+| --- | --- |
+| `/opt/google/chrome/chrome` | `/opt/google/chrome` |
+| `/usr/lib/brave-browser/brave` | empty |
+
+The core checks the package directory's ancestors and the selected executable's
+owner, write permissions, file capabilities and x86_64 ELF header. The system
+installation and its updates remain trusted. The core accepts HTTP(S) URLs,
+`about:blank`, `data:text/html,` pages and a limited set of switches (`--headless`,
+`--headless=new`, `--dump-dom`, `--no-first-run`, `--no-default-browser-check`,
+`--disable-background-networking`, `--version`). Each argument is passed directly
+to the executable. The browser stores its profile inside the application's HOME.
+
+The launcher gives the browser a private PID/mount/IPC environment in the
+application network namespace. Its guardian owns that network and its proxy
+worker. Only the browser mode allows the zygote to create descendant user, PID
+and network namespaces and chroot within the private filesystem. Capabilities
+gained in a descendant user namespace do not apply to the guardian's network
+or mounts. The kernel still enforces `no_new_privs` and the inherited Hiddify
+seccomp policy before Chromium installs its own renderer filter. Host namespace
+joins, mounts, cross-process descriptor access and host display/IPC sockets
+remain unavailable. Kernel control subtrees in procfs are masked separately so
+the zygote can set its own UID/GID maps. The outer policy applies to every
+browser descendant, regardless of its executable name. The guardian also owns a kernel TCP
+diagnostic socket in the application's private network namespace. On profile
+revocation, once the proxy worker has exited, it invalidates connected TCP
+sockets sourced from the removed tunnel. This wakes blocked browser reads and
+preserves the application and its private profile. This mode requires Linux
+TCP socket diagnostics with `CONFIG_INET_DIAG_DESTROY`. See the upstream
+[namespace sandbox](https://github.com/chromium/chromium/blob/143.0.7499.169/sandbox/linux/services/namespace_sandbox.cc).
+
+This stage targets headless rendering. Desktop windows, host clipboard, sound
+and Electron application integration require separate capabilities. Graphical
+launches still have no display endpoint. Existing namespace/resource limits
+are kernel limits, without a per-application quota.
 
 ## Isolation and prerequisites
 
@@ -230,8 +271,8 @@ gets a separate network namespace. sing-box's existing TUN namespace support
 installs routes there. No host route, firewall or sysctl is changed.
 
 Before application exec, bubblewrap creates nested user, PID, mount, IPC and UTS
-namespaces, drops all capability sets, enforces `no_new_privs`, disables further
-user namespaces and creates a new session. The application sees read-only
+namespaces, drops all capability sets, enforces `no_new_privs` and creates a new session.
+Default sessions disable further user namespaces. The application sees read-only
 system executables/libraries, private `/proc`, `/dev`, temporary home and `/tmp`,
 and a generated resolver file. Host home, `/run`, display and D-Bus sockets,
 profile files, host process handles and inherited socket descriptors are absent.
@@ -292,6 +333,13 @@ and privilege flags, descriptor isolation and proxy-only lifecycle.
 An opt-in installed Chrome version smoke is available through
 `HIDDIFY_BUNDLE_DRIVER=/absolute/path/bundle-driver python3 -m unittest discover -s tests -p test_sandbox_installed_bundle.py -v`.
 It uses disposable HOME data and does not start a GUI or read real profiles.
+
+For installed browser tests, build `tests/fixtures/sandbox_chromium_driver`
+with the CLI tags. Run `HIDDIFY_CHROMIUM_DRIVER=/absolute/path/driver python3 -m unittest discover -s tests -p test_sandbox_chromium.py -v` and
+`HIDDIFY_BUNDLE_DRIVER=/absolute/path/driver python3 tests/fixtures/sandbox_bundle_namespace.py test_chromium_outer_policy`.
+The first suite uses private profiles and a local test proxy and checks real
+renderer processes. The second checks the outer policy inside a disposable
+filesystem with a synthetic ELF and inert syscall arguments.
 
 ## Work required before app integration
 

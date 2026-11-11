@@ -44,7 +44,7 @@ type tunnelReady struct {
 	err     error
 }
 
-func managedSession(args []string, persistent bool, bundleRoot string) (int, error) {
+func managedSession(args []string, layout sessionLayout) (int, error) {
 	if len(args) == 0 {
 		return 1, errors.New("missing isolated application")
 	}
@@ -59,17 +59,17 @@ func managedSession(args []string, persistent bool, bundleRoot string) (int, err
 		return 1, err
 	}
 	defer resolver.Close()
-	filter, err := applicationFilter()
+	filter, err := applicationFilter(layout.chromium)
 	if err != nil {
 		return 1, err
 	}
 	defer filter.Close()
-	application := selfCommand("__child", args...)
+	application := layout.reexec("child", args)
 	application.ExtraFiles = []*os.File{resolver, filter}
 	var storageFiles []*os.File
-	if persistent {
+	if layout.persistent {
 		storageFiles = []*os.File{os.NewFile(4, "application-home"), os.NewFile(5, "namespace-info"), os.NewFile(6, "storage-gate")}
-		if bundleRoot != "" {
+		if layout.bundleRoot != "" {
 			storageFiles = append(storageFiles, os.NewFile(7, "executable-bundle"))
 		}
 		defer func() {
@@ -77,10 +77,6 @@ func managedSession(args []string, persistent bool, bundleRoot string) (int, err
 				file.Close()
 			}
 		}()
-		application = selfCommand("__stored_child", args...)
-		if bundleRoot != "" {
-			application = selfCommand("__bundled_child", append([]string{bundleRoot}, args...)...)
-		}
 		application.ExtraFiles = append([]*os.File{resolver, filter}, storageFiles...)
 	}
 	application.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET, Pdeathsig: syscall.SIGKILL}
@@ -104,6 +100,25 @@ func managedSession(args []string, persistent bool, bundleRoot string) (int, err
 		return 1, err
 	}
 	defer namespace.Close()
+	// The guardian opens this handle before releasing the application. It
+	// belongs only to this child's network and never crosses the exec boundary.
+	var connections *browserConnections
+	if layout.chromium {
+		connections, err = openBrowserConnections(namespace)
+		if err != nil {
+			return 1, fmt.Errorf("open isolated browser network: %w", err)
+		}
+		defer connections.close()
+	}
+	revokeFlows := func() error {
+		if connections == nil {
+			return nil
+		}
+		if err := connections.revoke(); err != nil {
+			return fmt.Errorf("disconnect previous browser TCP flows: %w", err)
+		}
+		return nil
+	}
 	if err = send(ManagedEvent{State: "offline"}); err != nil {
 		return 1, err
 	}
@@ -151,6 +166,15 @@ func managedSession(args []string, persistent bool, bundleRoot string) (int, err
 				active = nil
 			}
 			revision = update.Revision
+			// Removing TUN cuts off transport but a blocked browser read can
+			// still own an established kernel socket. Interrupt old reads
+			// before acknowledging OFFLINE or starting a replacement worker.
+			if cleanupErr := revokeFlows(); cleanupErr != nil {
+				if err = send(ManagedEvent{Revision: revision, State: "offline", Error: cleanupErr.Error()}); err != nil {
+					return 1, err
+				}
+				continue
+			}
 			if update.Policy == nil {
 				if err = send(ManagedEvent{Revision: revision, State: "offline"}); err != nil {
 					return 1, err
@@ -171,7 +195,7 @@ func managedSession(args []string, persistent bool, bundleRoot string) (int, err
 			if result.err != nil {
 				active.stop()
 				active = nil
-				err = send(ManagedEvent{Revision: revision, State: "offline", Error: result.err.Error()})
+				err = send(ManagedEvent{Revision: revision, State: "offline", Error: errors.Join(result.err, revokeFlows()).Error()})
 			} else {
 				err = send(ManagedEvent{Revision: revision, State: "online"})
 			}
@@ -180,7 +204,8 @@ func managedSession(args []string, persistent bool, bundleRoot string) (int, err
 			}
 		case <-tunnelDone:
 			active = nil
-			if err = send(ManagedEvent{Revision: revision, State: "offline", Error: "proxy worker exited; network permission revoked"}); err != nil {
+			offlineErr := errors.Join(errors.New("proxy worker exited; network permission revoked"), revokeFlows())
+			if err = send(ManagedEvent{Revision: revision, State: "offline", Error: offlineErr.Error()}); err != nil {
 				return 1, err
 			}
 		case err := <-appDone:

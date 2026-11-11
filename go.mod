@@ -15,6 +15,7 @@ require (
 	github.com/improbable-eng/grpc-web v0.15.0
 	github.com/jellydator/validation v1.1.0
 	github.com/kardianos/service v1.2.2
+	github.com/mdlayher/netlink v1.11.2
 	github.com/quic-go/quic-go v0.59.0
 	github.com/sagernet/gomobile v0.1.12
 	github.com/sagernet/sing v0.9.7-0.20261023115510-03a6cce64bf7
@@ -156,7 +157,6 @@ require (
 	github.com/libp2p/go-reuseport v0.4.0 // indirect
 	github.com/logrusorgru/aurora v2.0.3+incompatible // indirect
 	github.com/marusama/semaphore v0.0.0-20171214154724-565ffd8e868a // indirect
-	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/metacubex/age v0.0.0-20260603010618-28d156b4ea78 // indirect
 	github.com/metacubex/hkdf v0.1.0 // indirect
