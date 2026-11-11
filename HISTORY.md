@@ -7,6 +7,8 @@ Changelog
 
 New
 ~~~
+- Load the private Wayland display and its libraries from the verified
+  Linux AppImage runtime so an installed Weston is unnecessary.
 - Launch a chosen Linux program with literal arguments, private storage and
   optional Wayland output through the authenticated RunApplication API.
 - Add private Wayland windows to managed Chrome and Brave sessions on Linux

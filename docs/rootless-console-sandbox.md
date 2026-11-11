@@ -283,26 +283,41 @@ are kernel limits without a per-application quota.
 
 ### Private Wayland windows
 
-Set both `chromium_sandbox` and `private_wayland` (field 5) on the authenticated
-`RunSandbox` request. Supply the supported browser executable and its private
-application ID. The core selects the Wayland backend for Chromium. Omit the
-headless and DOM dump switches for this mode.
+To open a window for a chosen application, set `private_wayland` on
+`RunApplication` and supply its command and private application ID.
+The older Chromium-specific `RunSandbox` also accepts a private display:
+set both `chromium_sandbox` and `private_wayland`, and omit the headless and
+DOM dump switches. The core selects the Wayland backend for that browser.
 
-The core starts a separate Weston compositor for each browser. Weston uses its
+The core starts a separate Weston compositor for each graphical session. Weston uses its
 Wayland backend, software rendering and kiosk shell. A rootless bubblewrap
 process gives it a private network, PID and filesystem environment and access
 to the current user's parent display socket. The core derives that socket from
-its own desktop session. The request contains no display path. The browser
+its own desktop session. The request contains no display path. The application
 receives a read-only mount of its own compositor's listening socket at
-`/run/sandbox/wayland-0`. Its renderers keep Chromium's native sandbox.
+`/run/sandbox/wayland-0`. The Chromium-specific mode retains its renderer sandbox.
 
-The private display lives as long as the browser session. Profile loss revokes
+The private display lives as long as the application session. Profile loss revokes
 network access while the window stays available. Cancelling the stream closes
-the browser and its compositor. Loss of the compositor ends that GUI session.
-This mode requires a Wayland desktop and Weston 15 or newer at `/usr/bin/weston`.
-An unavailable parent display or compositor fails the request. Packaging Weston
-for AppImage, host clipboard and audio mediation, and support for Electron
-applications are separate integration work.
+the application and its compositor. Loss of the compositor ends that GUI session.
+A Wayland desktop supplies the parent display. A standalone core uses a
+trusted Weston 15 or newer at `/usr/bin/weston`. When started by the
+AppImage runtime (`APPIMAGE` is set), the core requires
+`lib/hiddify-weston-runtime.tar.gz` next to its actual executable. An invalid
+or absent archive fails the window request even if system Weston is installed.
+Console launches do not need the archive.
+
+The portable runtime contains x86_64 Weston, its Wayland backend, kiosk
+shell, dynamic loader, shared libraries and display data. The AppImage
+packaging lock identifies the exact source packages and versions.
+The core verifies the SHA-256 and size of the uncompressed USTAR before
+using its contents. It passes the verified regular files to bubblewrap using
+sealed descriptors. Bubblewrap places them into new `/usr`, `/lib`, `/lib64` and `/etc`
+mounts and makes these read-only before starting Weston. Each compositor has
+its own network namespace and private display socket. The application can
+connect only to that private socket. A missing parent display also fails the
+window request. Clipboard, audio and Electron renderer support need separate
+capabilities.
 
 ## Isolation and prerequisites
 
