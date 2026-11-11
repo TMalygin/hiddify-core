@@ -51,6 +51,7 @@ const (
 	Core_ListCrashReports_FullMethodName      = "/hcore.Core/ListCrashReports"
 	Core_ExportDiagnostics_FullMethodName     = "/hcore.Core/ExportDiagnostics"
 	Core_RunSandbox_FullMethodName            = "/hcore.Core/RunSandbox"
+	Core_RunApplication_FullMethodName        = "/hcore.Core/RunApplication"
 )
 
 // CoreClient is the client API for Core service.
@@ -111,6 +112,10 @@ type CoreClient interface {
 	// disconnect/replacement keeps the command alive offline; cancelling this
 	// stream closes the entire application session.
 	RunSandbox(ctx context.Context, in *SandboxRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SandboxEvent], error)
+	// Linux, verified mTLS. Launch the chosen executable and literal arguments
+	// with a private application_id and optional private_wayland display.
+	// Supports installed programs and a single user-selected standalone file.
+	RunApplication(ctx context.Context, in *SandboxRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SandboxEvent], error)
 }
 
 type coreClient struct {
@@ -494,6 +499,25 @@ func (c *coreClient) RunSandbox(ctx context.Context, in *SandboxRunRequest, opts
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Core_RunSandboxClient = grpc.ServerStreamingClient[SandboxEvent]
 
+func (c *coreClient) RunApplication(ctx context.Context, in *SandboxRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SandboxEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Core_ServiceDesc.Streams[7], Core_RunApplication_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SandboxRunRequest, SandboxEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Core_RunApplicationClient = grpc.ServerStreamingClient[SandboxEvent]
+
 // CoreServer is the server API for Core service.
 // All implementations must embed UnimplementedCoreServer
 // for forward compatibility.
@@ -552,6 +576,10 @@ type CoreServer interface {
 	// disconnect/replacement keeps the command alive offline; cancelling this
 	// stream closes the entire application session.
 	RunSandbox(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error
+	// Linux, verified mTLS. Launch the chosen executable and literal arguments
+	// with a private application_id and optional private_wayland display.
+	// Supports installed programs and a single user-selected standalone file.
+	RunApplication(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error
 	mustEmbedUnimplementedCoreServer()
 }
 
@@ -654,6 +682,9 @@ func (UnimplementedCoreServer) ExportDiagnostics(context.Context, *ExportDiagnos
 }
 func (UnimplementedCoreServer) RunSandbox(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error {
 	return status.Errorf(codes.Unimplemented, "method RunSandbox not implemented")
+}
+func (UnimplementedCoreServer) RunApplication(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error {
+	return status.Errorf(codes.Unimplemented, "method RunApplication not implemented")
 }
 func (UnimplementedCoreServer) mustEmbedUnimplementedCoreServer() {}
 func (UnimplementedCoreServer) testEmbeddedByValue()              {}
@@ -1185,6 +1216,17 @@ func _Core_RunSandbox_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Core_RunSandboxServer = grpc.ServerStreamingServer[SandboxEvent]
 
+func _Core_RunApplication_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SandboxRunRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(CoreServer).RunApplication(m, &grpc.GenericServerStream[SandboxRunRequest, SandboxEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Core_RunApplicationServer = grpc.ServerStreamingServer[SandboxEvent]
+
 // Core_ServiceDesc is the grpc.ServiceDesc for Core service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1323,6 +1365,11 @@ var Core_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "RunSandbox",
 			Handler:       _Core_RunSandbox_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "RunApplication",
+			Handler:       _Core_RunApplication_Handler,
 			ServerStreams: true,
 		},
 	},

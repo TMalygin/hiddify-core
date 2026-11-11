@@ -10,7 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -72,10 +74,11 @@ func StartManagedWithApplication(ctx context.Context, command []string, workingD
 // ApplicationOptions describes explicit filesystem capabilities. Host paths
 // cannot select writable data roots; ID is resolved beneath core Setup's path.
 type ApplicationOptions struct {
-	ID              string
-	ExecutableRoot  string
-	ChromiumSandbox bool
-	PrivateWayland  bool
+	ID                  string
+	ExecutableRoot      string
+	ChromiumSandbox     bool
+	PrivateWayland      bool
+	SelectedApplication bool
 }
 
 // Reexec arguments carry the validated layout. Directory descriptors stay in
@@ -85,11 +88,29 @@ type sessionLayout struct {
 	bundleRoot string
 	chromium   bool
 	wayland    bool
+	generic    bool
+}
+
+// In the generic session the host core imports one standalone file outside
+// the read-only system mounts. The same fixed path crosses both reexecs.
+const selectedProgramDir = "/run/selected-program"
+
+func systemProgram(path string) bool {
+	for _, prefix := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (layout sessionLayout) reexec(role string, command []string) *exec.Cmd {
 	mode := "__"
 	switch {
+	case layout.generic && layout.wayland:
+		mode += "application_wayland_"
+	case layout.generic:
+		mode += "application_"
 	case layout.wayland:
 		mode += "wayland_"
 	case layout.chromium:
@@ -99,7 +120,7 @@ func (layout sessionLayout) reexec(role string, command []string) *exec.Cmd {
 	case layout.persistent:
 		mode += "stored_"
 	}
-	if layout.chromium || layout.bundleRoot != "" {
+	if layout.chromium || layout.generic || layout.bundleRoot != "" {
 		command = append([]string{layout.bundleRoot}, command...)
 	}
 	return selfCommand(mode+role, command...)
@@ -122,7 +143,22 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	if size > 64*1024 {
 		return nil, errors.New("sandbox command exceeds 64 KiB")
 	}
-	if options.PrivateWayland && !options.ChromiumSandbox {
+	if options.SelectedApplication {
+		if !validApplicationID(options.ID) {
+			return nil, errors.New("RunApplication requires a valid application_id")
+		}
+		if options.ChromiumSandbox {
+			return nil, errors.New("RunApplication uses the ordinary application policy; chromium_sandbox is available through RunSandbox")
+		}
+		if command[0] != filepath.Clean(command[0]) || command[0] == "/" {
+			return nil, errors.New("select a canonical absolute executable path")
+		}
+		for _, arg := range command {
+			if strings.IndexByte(arg, 0) >= 0 {
+				return nil, errors.New("application arguments cannot contain a NUL byte")
+			}
+		}
+	} else if options.PrivateWayland && !options.ChromiumSandbox {
 		return nil, errors.New("private_wayland requires chromium_sandbox and application_id")
 	}
 	if options.ChromiumSandbox {
@@ -148,6 +184,16 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 		if err := validateChromiumExecutable(ctx, command[0], bundle); err != nil {
 			return nil, err
 		}
+	}
+	var selected *os.File
+	if options.SelectedApplication && bundle == nil && !systemProgram(command[0]) {
+		var err error
+		selected, err = openSelectedExecutable(ctx, command[0])
+		if err != nil {
+			return nil, err
+		}
+		defer selected.Close()
+		command = append([]string{filepath.Join(selectedProgramDir, filepath.Base(command[0]))}, command[1:]...)
 	}
 	var storage *applicationStorage
 	var infoRead, infoWrite, blockRead, blockWrite *os.File
@@ -177,7 +223,7 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	if err != nil {
 		return nil, err
 	}
-	layout := sessionLayout{persistent: storage != nil, bundleRoot: options.ExecutableRoot, chromium: options.ChromiumSandbox, wayland: options.PrivateWayland}
+	layout := sessionLayout{persistent: storage != nil, bundleRoot: options.ExecutableRoot, chromium: options.ChromiumSandbox, wayland: options.PrivateWayland, generic: options.SelectedApplication}
 	process := layout.reexec("session", command)
 	files := []*os.File{statusWrite}
 	if storage != nil {
@@ -185,6 +231,9 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	}
 	if bundle != nil {
 		files = append(files, bundle.directory)
+	}
+	if selected != nil {
+		files = append(files, selected)
 	}
 	process.ExtraFiles = files
 	process.SysProcAttr = rootlessAttributes()
@@ -237,7 +286,7 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 			result := <-completion
 			var final ManagedEvent
 			if displayLost {
-				final = ManagedEvent{State: "error", Error: "the private Wayland display closed while the browser was running"}
+				final = ManagedEvent{State: "error", Error: "the private Wayland display closed while the application was running"}
 			} else if result.err != nil {
 				final = ManagedEvent{State: "error", Error: result.err.Error()}
 			} else if err := guardianExitError(waitErr, result.terminal.ExitCode); err != nil {

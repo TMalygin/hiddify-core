@@ -961,10 +961,10 @@ translate.goog domain front so it reaches users behind GFW-style filters.
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | command | [string](#string) | repeated | Absolute executable followed by arguments. No shell expansion or host env. |
-| application_id | [string](#string) |  | Optional private persistent HOME identity: [a-z0-9][a-z0-9_-]{0,63}. Empty preserves the temporary console HOME. No caller-supplied host path. |
+| application_id | [string](#string) |  | Optional private persistent HOME identity: [a-z0-9][a-z0-9_-]{0,63}. Required by RunApplication. Empty preserves the temporary RunSandbox console HOME. |
 | executable_root | [string](#string) |  | Optional read-only system bundle, requiring application_id. Canonical path below /opt, exactly the parent of command[0]; no arbitrary mount destination. |
 | chromium_sandbox | [bool](#bool) |  | Opt in to the renderer sandbox for installed Chrome or Brave. Requires application_id. Set executable_root to /opt/google/chrome for Chrome and leave it empty for Brave under /usr. |
-| private_wayland | [bool](#bool) |  | Open a private Wayland display for this Chromium session on Linux. The core chooses the display and supervises its compositor. |
+| private_wayland | [bool](#bool) |  | Open and supervise a private Wayland display. RunApplication supports this with the ordinary application policy. RunSandbox requires chromium_sandbox. |
 
 
 
@@ -1404,6 +1404,7 @@ Connection state of an outbound or endpoint (mirrors adapter.Status).
 | ListCrashReports | [.hcommon.Empty](#hcommon-Empty) | [CrashReportList](#hcore-CrashReportList) | The crash reports in this core&#39;s working directory: the archived ones (crash_reports, oom_reports) and the live stderr files that hold a crash, newest last. |
 | ExportDiagnostics | [ExportDiagnosticsRequest](#hcore-ExportDiagnosticsRequest) | [ExportDiagnosticsResponse](#hcore-ExportDiagnosticsResponse) | A zip of this core&#39;s diagnostics: the crash, OOM and power reports, the stderr and core log files, the previous run&#39;s goroutines (a snapshot the core writes every minute while connected, kept aside at the next start), the running config with servers and secrets removed, and the files the request adds. Text is scrubbed of addresses, links and secrets. Returns the zip&#39;s path, and its bytes when the request asks for them (a core in another process, whose files the app cannot read). |
 | RunSandbox | [SandboxRunRequest](#hcore-SandboxRunRequest) | [SandboxEvent](#hcore-SandboxEvent) stream | Linux only, authenticated mTLS only. Runs a console command in a rootless sandbox. Network follows the native active-profile revision. Profile disconnect/replacement keeps the command alive offline; cancelling this stream closes the entire application session. |
+| RunApplication | [SandboxRunRequest](#hcore-SandboxRunRequest) | [SandboxEvent](#hcore-SandboxEvent) stream | Linux, verified mTLS. Launch the chosen executable and literal arguments with a private application_id and optional private_wayland display. Supports installed programs and a single user-selected standalone file. |
 
  
 

@@ -211,6 +211,35 @@ symlink-based or nested executable layouts need a separate import/validation
 design. The optional Chromium renderer policy is described below. Regenerate client
 stubs and pin a compatible core before relying on the additive field.
 
+### Launching a chosen program
+
+Call `/hcore.Core/RunApplication` over the verified mTLS channel. Use the
+existing `SandboxRunRequest` and consume the event stream for the lifetime
+of the session. Older cores return `UNIMPLEMENTED`. Set a private
+`application_id` and pass the absolute executable path followed by individual
+arguments in `command`. Empty arguments and spaces are preserved. For example,
+`["/usr/bin/printf", "%s\n", "two words"]` prints one line. This API uses the
+ordinary application policy and accepts no Chromium-specific switches in the
+request options. The separate renderer policy is described below.
+
+Programs under the existing read-only system mounts run in place. A system
+package under `/opt` can use the validated `executable_root` described above.
+For a standalone program elsewhere, select an executable file owned by the
+calling user. The core snapshots the ELF or shebang script and mounts only
+that copy read-only, retaining its basename. Its interpreter and libraries
+must be available inside the session. The selected source must be executable
+on its original mount, free of symlinks, set-ID bits and file capabilities,
+and at most 256 MiB. Select the real file when choosing a user-owned symlink.
+Applications which load sibling resources need those resources installed in
+one of the supported system locations.
+
+Set `private_wayland` for a native Wayland window. The application receives
+its own display socket and its original arguments. A console launch requires
+no compositor. Both forms follow the active proxy policy, revoke previous
+TCP connections when the profile stops and keep the process and private home
+available offline. Cancelling the RPC closes the session. The private display
+prerequisites below also apply to general graphical clients.
+
 ### Native Chromium renderers
 
 `SandboxRunRequest.chromium_sandbox` opts an authenticated persistent session

@@ -292,6 +292,14 @@ func sandboxEmergencyRevoke() {
 }
 
 func (s *CoreService) RunSandbox(request *SandboxRunRequest, stream grpc.ServerStreamingServer[SandboxEvent]) error {
+	return s.runIsolated(request, stream, false)
+}
+
+func (s *CoreService) RunApplication(request *SandboxRunRequest, stream grpc.ServerStreamingServer[SandboxEvent]) error {
+	return s.runIsolated(request, stream, true)
+}
+
+func (s *CoreService) runIsolated(request *SandboxRunRequest, stream grpc.ServerStreamingServer[SandboxEvent], selectedApplication bool) error {
 	remote, ok := peer.FromContext(stream.Context())
 	if !ok {
 		return status.Error(codes.Unauthenticated, "sandbox requires mutual TLS")
@@ -314,7 +322,7 @@ func (s *CoreService) RunSandbox(request *SandboxRunRequest, stream grpc.ServerS
 	mu.Unlock()
 	session, err := sandbox.StartManagedWithOptions(ctx, request.Command, workingDirectory, sandbox.ApplicationOptions{
 		ID: request.ApplicationId, ExecutableRoot: request.ExecutableRoot,
-		ChromiumSandbox: request.ChromiumSandbox, PrivateWayland: request.PrivateWayland,
+		ChromiumSandbox: request.ChromiumSandbox, PrivateWayland: request.PrivateWayland, SelectedApplication: selectedApplication,
 	})
 	cancel()
 	if err != nil {

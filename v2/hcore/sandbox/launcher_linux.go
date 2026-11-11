@@ -47,13 +47,19 @@ func Run(args []string) int {
 		code, err = child(args[1:], sessionLayout{persistent: mode == "__stored_child"})
 	case "__session", "__stored_session":
 		code, err = managedSession(args[1:], sessionLayout{persistent: mode == "__stored_session"})
-	case "__bundled_child", "__bundled_session", "__chromium_child", "__chromium_session", "__wayland_child", "__wayland_session":
+	case "__bundled_child", "__bundled_session", "__chromium_child", "__chromium_session", "__wayland_child", "__wayland_session",
+		"__application_child", "__application_session", "__application_wayland_child", "__application_wayland_session":
 		if len(args) < 3 {
 			err = errors.New("missing bundle argument or application")
 			break
 		}
-		wayland := strings.HasPrefix(mode, "__wayland_")
-		layout := sessionLayout{persistent: true, bundleRoot: args[1], chromium: wayland || strings.HasPrefix(mode, "__chromium_"), wayland: wayland}
+		browserWindow := strings.HasPrefix(mode, "__wayland_")
+		layout := sessionLayout{
+			persistent: true, bundleRoot: args[1],
+			chromium: browserWindow || strings.HasPrefix(mode, "__chromium_"),
+			wayland:  browserWindow || strings.HasPrefix(mode, "__application_wayland_"),
+			generic:  strings.HasPrefix(mode, "__application_"),
+		}
 		if strings.HasSuffix(mode, "_child") {
 			code, err = child(args[2:], layout)
 		} else {
@@ -390,11 +396,17 @@ func child(command []string, layout sessionLayout) (int, error) {
 		args = append(args, "--ro-bind-fd", "8", layout.bundleRoot)
 		firstPrivateFD = 9
 	}
+	if layout.generic && filepath.Dir(command[0]) == selectedProgramDir {
+		args = append(args, "--dir", selectedProgramDir, "--perms", "0555", "--ro-bind-data", fmt.Sprint(firstPrivateFD), command[0])
+		firstPrivateFD++
+	}
 	if layout.wayland {
 		args = append(args, "--ro-bind-fd", fmt.Sprint(firstPrivateFD), "/run/sandbox/"+privateWaylandSocket,
 			"--setenv", "WAYLAND_DISPLAY", privateWaylandSocket)
 		firstPrivateFD++
-		command = append([]string{command[0], "--ozone-platform=wayland"}, command[1:]...)
+		if layout.chromium {
+			command = append([]string{command[0], "--ozone-platform=wayland"}, command[1:]...)
+		}
 	}
 	args, err = appendSystemLibraryMounts(args)
 	if err != nil {
