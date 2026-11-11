@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -112,32 +113,48 @@ func sandboxPublish(ctx context.Context, options *option.Options) {
 	if options.Route != nil {
 		profile.final = options.Route.Final
 	}
-	if profile.final == "" && len(options.Outbounds) > 0 {
-		profile.final = options.Outbounds[0].Tag
+	// Reload can retain the running default when route.final is omitted.
+	if box := static.Box(); profile.final == "" && box != nil {
+		if current := box.Outbound().Default(); current != nil {
+			profile.final = current.Tag()
+		}
 	}
 	defined := make(map[string]bool)
-	for _, outbound := range options.Outbounds {
-		if profile.externalController && outbound.Tag != "" && defined[outbound.Tag] {
-			profile.blocked = errors.New("duplicate outbound tags prevent verification of the selected proxy")
+	for i, endpoint := range options.Endpoints {
+		defined[sandboxRuntimeTag(endpoint.Tag, i)] = true
+	}
+	for i, outbound := range options.Outbounds {
+		tag := sandboxRuntimeTag(outbound.Tag, i)
+		if defined[tag] {
+			profile.blocked = errors.New("duplicate route tags prevent verification of the selected proxy")
 			break
 		}
-		defined[outbound.Tag] = true
+		defined[tag] = true
 		if outbound.Type == "selector" {
 			member := ""
 			if group, ok := outbound.Options.(*option.SelectorOutboundOptions); ok && group != nil && len(group.Outbounds) == 1 {
 				member = group.Outbounds[0]
 			}
-			profile.selectors[outbound.Tag] = member
+			profile.selectors[tag] = member
 			continue
 		}
 		policy, err := sandboxLeaf(outbound)
 		if err != nil {
-			profile.errors[outbound.Tag] = err
+			profile.errors[tag] = err
 		} else {
-			profile.leaves[outbound.Tag] = policy
+			profile.leaves[tag] = policy
 		}
 	}
 	sandboxPublishProfile(ctx, profile)
+}
+
+// The engine installs unnamed outbounds and endpoints under their decimal
+// index in the respective list. Empty strings are never runtime identities.
+func sandboxRuntimeTag(tag string, index int) string {
+	if tag == "" {
+		return strconv.Itoa(index)
+	}
+	return tag
 }
 
 func sandboxLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
@@ -280,8 +297,18 @@ func (p *sandboxProfile) selected() (*sandbox.Policy, error) {
 		}
 	}
 	if policy := p.leaves[tag]; policy != nil {
-		if p.externalController && policy.Type != "vless" {
-			return nil, errors.New("external Clash control requires a single VLESS/Reality exit")
+		if p.externalController {
+			if policy.Type != "vless" {
+				return nil, errors.New("external Clash control requires a single VLESS/Reality exit")
+			}
+			box := static.Box()
+			if box == nil {
+				return nil, errors.New("core is not running")
+			}
+			live, ok := box.Outbound().Outbound(tag)
+			if !ok || live.Type() != policy.Type {
+				return nil, errors.New("the selected proxy does not match the running Reality exit")
+			}
 		}
 		return policy, nil
 	}
