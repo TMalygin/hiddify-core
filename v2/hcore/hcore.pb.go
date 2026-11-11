@@ -3259,7 +3259,7 @@ type SandboxRunRequest struct {
 	// Absolute executable followed by arguments. No shell expansion or host env.
 	Command []string `protobuf:"bytes,1,rep,name=command,proto3" json:"command,omitempty"`
 	// Optional private persistent HOME identity: [a-z0-9][a-z0-9_-]{0,63}.
-	// Empty preserves the temporary console HOME. No caller-supplied host path.
+	// Required by RunApplication. Empty preserves the temporary RunSandbox console HOME.
 	ApplicationId string `protobuf:"bytes,2,opt,name=application_id,json=applicationId,proto3" json:"application_id,omitempty"`
 	// Optional read-only system bundle, requiring application_id. Canonical path
 	// below /opt, exactly the parent of command[0]; no arbitrary mount destination.
@@ -3267,8 +3267,8 @@ type SandboxRunRequest struct {
 	// Opt in to the renderer sandbox for installed Chrome or Brave. Requires application_id.
 	// Set executable_root to /opt/google/chrome for Chrome and leave it empty for Brave under /usr.
 	ChromiumSandbox bool `protobuf:"varint,4,opt,name=chromium_sandbox,json=chromiumSandbox,proto3" json:"chromium_sandbox,omitempty"`
-	// Open a private Wayland display for this Chromium session on Linux.
-	// The core chooses the display and supervises its compositor.
+	// Open and supervise a private Wayland display. RunApplication supports this
+	// with the ordinary application policy. RunSandbox requires chromium_sandbox.
 	PrivateWayland bool `protobuf:"varint,5,opt,name=private_wayland,json=privateWayland,proto3" json:"private_wayland,omitempty"`
 }
 

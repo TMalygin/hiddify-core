@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 
 	"github.com/sagernet/netlink"
@@ -72,6 +73,9 @@ func managedSession(args []string, layout sessionLayout) (int, error) {
 		if layout.bundleRoot != "" {
 			sessionFiles = append(sessionFiles, os.NewFile(7, "executable-bundle"))
 		}
+		if layout.generic && filepath.Dir(args[0]) == selectedProgramDir {
+			sessionFiles = append(sessionFiles, os.NewFile(uintptr(4+len(sessionFiles)), "selected-executable"))
+		}
 		if layout.wayland {
 			sessionFiles = append(sessionFiles, os.NewFile(uintptr(4+len(sessionFiles)), "private-wayland-listener"))
 		}
@@ -106,10 +110,10 @@ func managedSession(args []string, layout sessionLayout) (int, error) {
 	// The guardian opens this handle before releasing the application. It
 	// belongs only to this child's network and never crosses the exec boundary.
 	var connections *browserConnections
-	if layout.chromium {
+	if layout.chromium || layout.generic {
 		connections, err = openBrowserConnections(namespace)
 		if err != nil {
-			return 1, fmt.Errorf("open isolated browser network: %w", err)
+			return 1, fmt.Errorf("open isolated application network: %w", err)
 		}
 		defer connections.close()
 	}
@@ -118,7 +122,7 @@ func managedSession(args []string, layout sessionLayout) (int, error) {
 			return nil
 		}
 		if err := connections.revoke(); err != nil {
-			return fmt.Errorf("disconnect previous browser TCP flows: %w", err)
+			return fmt.Errorf("disconnect previous application TCP flows: %w", err)
 		}
 		return nil
 	}

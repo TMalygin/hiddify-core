@@ -61,6 +61,10 @@ service Core {
   // disconnect/replacement keeps the command alive offline; cancelling this
   // stream closes the entire application session.
   rpc RunSandbox (SandboxRunRequest) returns (stream SandboxEvent);
+  // Linux, verified mTLS. Launch the chosen executable and literal arguments
+  // with a private application_id and optional private_wayland display.
+  // Supports installed programs and a single user-selected standalone file.
+  rpc RunApplication (SandboxRunRequest) returns (stream SandboxEvent);
 }
 
 

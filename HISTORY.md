@@ -7,6 +7,8 @@ Changelog
 
 New
 ~~~
+- Launch a chosen Linux program with literal arguments, private storage and
+  optional Wayland output through the authenticated RunApplication API.
 - Add private Wayland windows to managed Chrome and Brave sessions on Linux
   with a separate rootless Weston compositor for each browser.
 - Add an opt-in Linux RunSandbox policy for installed Chrome and Brave to
