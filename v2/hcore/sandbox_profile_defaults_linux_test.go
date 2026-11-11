@@ -4,10 +4,12 @@ package hcore
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/sagernet/sing-box/experimental/libbox"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/service/filemanager"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,7 +66,9 @@ func TestSandboxDefaultClashProfilePermission(t *testing.T) {
 	}
 	// Use actual engine selectors and the ordinary external controller. This
 	// fixture has no external inbounds, and both proxy endpoints are loopback.
-	server, err := NewService(libbox.BaseContext(nil), opts, nil)
+	dir := t.TempDir()
+	ctx := filemanager.WithDefault(libbox.BaseContext(nil), dir, dir, os.Getuid(), os.Getgid())
+	server, err := NewService(ctx, opts, nil)
 	require.NoError(t, err)
 	prev := static.StartedService
 	static.StartedService = server
