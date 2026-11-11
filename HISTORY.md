@@ -7,6 +7,9 @@ Changelog
 
 New
 ~~~
+- Allow isolated Linux applications to use an unambiguous VLESS/Reality
+  profile with Hiddify's default Clash controller and numeric TCP DNS.
+  Report the reason when an active profile leaves an application offline.
 - Load the private Wayland display and its libraries from the verified
   Linux AppImage runtime so an installed Weston is unnecessary.
 - Launch a chosen Linux program with literal arguments, private storage and

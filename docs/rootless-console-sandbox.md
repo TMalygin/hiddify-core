@@ -107,10 +107,23 @@ exit codes are preserved; a guardian failure is reported as an error instead.
 This stage supports numeric SOCKS5 leaves and the VLESS/Reality subset above,
 selected directly or through explicit selectors. DIRECT, automatic groups, detours, custom dialers,
 UDP-over-TCP and domain-based DNS/proxy endpoints remain offline. Unused DIRECT
-outbounds in an ordinary profile are not copied into the worker. Profiles with
-an external Clash controller are ineligible because it bypasses the native
-selection barrier. Automatic keep-top reload revokes existing permission until
-a successful explicit restart or reload. Neither transport adds a GUI launcher.
+outbounds in an ordinary profile are not copied into the worker.
+
+With Hiddify's default external Clash controller enabled, a supported VLESS/Reality
+exit can be used directly or through a chain of selectors that each have exactly
+one member. For example, a profile imported from a single supported VLESS link
+does not require changing the Clash or DNS settings. A selector containing both
+VLESS and DIRECT stays offline even when VLESS is currently selected: the external
+controller could change its member outside the core's revocation barrier. The
+managed worker uses only the verified VLESS exit, never the ordinary routing rules.
+Disconnecting or switching profiles revokes that worker; the application keeps
+running. An eligible replacement profile can grant it a new worker.
+
+For managed VLESS, a numeric TCP resolver such as `tcp://8.8.8.8` (optionally
+with port 53) uses the worker's existing TCP DNS transport through the proxy.
+This does not rewrite global DNS settings or resolve the proxy hostname on the
+host. Automatic keep-top reload revokes existing permission until a successful
+explicit restart or reload.
 
 The ordinary core may run its own health checks independently. The managed
 contract restricts launched applications, not all network activity of Hiddify.

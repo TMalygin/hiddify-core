@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,21 +27,23 @@ import (
 // Ordinary profile rules, DIRECT, inbounds, remote rule sets, and bootstrap DNS
 // are never passed to the isolated worker. Unsupported selections stay offline.
 type sandboxProfile struct {
-	final     string
-	leaves    map[string]*sandbox.Policy
-	selectors map[string]bool
-	errors    map[string]error
-	blocked   error
+	final              string
+	leaves             map[string]*sandbox.Policy
+	selectors          map[string]string // sole configured member, or "" for a mutable group
+	errors             map[string]error
+	blocked            error
+	externalController bool
 }
 
 var sandboxLeases = struct {
 	sync.Mutex
-	generation uint64
-	revision   uint64
-	profile    *sandboxProfile
-	policy     *sandbox.Policy
-	sessions   map[*sandbox.Managed]struct{}
-	reserved   int
+	generation    uint64
+	revision      uint64
+	profile       *sandboxProfile
+	policy        *sandbox.Policy
+	offlineReason string
+	sessions      map[*sandbox.Managed]struct{}
+	reserved      int
 }{sessions: make(map[*sandbox.Managed]struct{})}
 
 type sandboxGenerationKey struct{}
@@ -67,6 +71,7 @@ func sandboxRevokeLocked(ctx context.Context) context.Context {
 	sandboxLeases.revision++
 	revision := sandboxLeases.revision
 	sandboxLeases.policy = nil
+	sandboxLeases.offlineReason = ""
 	sessions := sandboxSessionsLocked()
 	sandboxLeases.Unlock()
 	sandboxUpdate(sessions, revision, nil)
@@ -102,21 +107,27 @@ func sandboxUpdate(sessions []*sandbox.Managed, revision uint64, policy *sandbox
 
 // Called only after the engine has accepted a config, with static.lock held.
 func sandboxPublish(ctx context.Context, options *option.Options) {
-	profile := &sandboxProfile{leaves: make(map[string]*sandbox.Policy), selectors: make(map[string]bool), errors: make(map[string]error)}
-	if options.Experimental != nil && options.Experimental.ClashAPI != nil && options.Experimental.ClashAPI.ExternalController != "" {
-		// External controllers can change a selector without our revocation
-		// barrier. Such profiles are not eligible for a managed sandbox lease.
-		profile.blocked = errors.New("sandbox requires profile selection through the native core API; external Clash control is unsupported")
-	}
+	profile := &sandboxProfile{leaves: make(map[string]*sandbox.Policy), selectors: make(map[string]string), errors: make(map[string]error)}
+	profile.externalController = options.Experimental != nil && options.Experimental.ClashAPI != nil && options.Experimental.ClashAPI.ExternalController != ""
 	if options.Route != nil {
 		profile.final = options.Route.Final
 	}
 	if profile.final == "" && len(options.Outbounds) > 0 {
 		profile.final = options.Outbounds[0].Tag
 	}
+	defined := make(map[string]bool)
 	for _, outbound := range options.Outbounds {
+		if profile.externalController && outbound.Tag != "" && defined[outbound.Tag] {
+			profile.blocked = errors.New("duplicate outbound tags prevent verification of the selected proxy")
+			break
+		}
+		defined[outbound.Tag] = true
 		if outbound.Type == "selector" {
-			profile.selectors[outbound.Tag] = true
+			member := ""
+			if group, ok := outbound.Options.(*option.SelectorOutboundOptions); ok && group != nil && len(group.Outbounds) == 1 {
+				member = group.Outbounds[0]
+			}
+			profile.selectors[outbound.Tag] = member
 			continue
 		}
 		policy, err := sandboxLeaf(outbound)
@@ -188,9 +199,13 @@ func sandboxRealityLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
 	if !reflect.DeepEqual(*vless, allowed) {
 		return nil, errors.New("sandbox VLESS profile contains unsupported TLS, dialer or transport settings")
 	}
+	dnsAddress, err := sandboxRealityDNS(static.HiddifyOptions.RemoteDnsAddress)
+	if err != nil {
+		return nil, err
+	}
 	content, err := json.Marshal(sandbox.Policy{
 		Type: "vless", Server: vless.Server, ServerPort: vless.ServerPort,
-		DNSServer: static.HiddifyOptions.RemoteDnsAddress, UUID: vless.UUID, Flow: vless.Flow,
+		DNSServer: dnsAddress, UUID: vless.UUID, Flow: vless.Flow,
 		ServerName: tls.ServerName, PublicKey: tls.Reality.PublicKey, ShortID: tls.Reality.ShortID,
 		Fingerprint: tls.UTLS.Fingerprint, PacketEncoding: "xudp", KeyShare: tls.Reality.KeyShare,
 	})
@@ -198,6 +213,27 @@ func sandboxRealityLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
 		return nil, err
 	}
 	return sandbox.ParsePolicy(bytes.NewReader(content))
+}
+
+// The worker's resolver uses TCP/53 through its only outbound. Accept that
+// exact Hiddify DNS transport without changing the main engine's DNS settings.
+func sandboxRealityDNS(configured string) (string, error) {
+	authority, tcp := strings.CutPrefix(configured, "tcp://")
+	if !tcp {
+		return configured, nil // ParsePolicy validates bare numeric addresses.
+	}
+	if addr, err := netip.ParseAddr(authority); err == nil && addr.Is4() {
+		return addr.String(), nil
+	}
+	if strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
+		if addr, err := netip.ParseAddr(authority[1 : len(authority)-1]); err == nil && addr.Is6() && addr.Zone() == "" {
+			return addr.String(), nil
+		}
+	}
+	if endpoint, err := netip.ParseAddrPort(authority); err == nil && endpoint.Port() == 53 && endpoint.Addr().Zone() == "" {
+		return endpoint.Addr().String(), nil
+	}
+	return "", errors.New("sandbox TCP DNS requires a numeric resolver address on port 53")
 }
 
 // Resolve only explicit selectors against the live engine, never its global
@@ -208,7 +244,16 @@ func (p *sandboxProfile) selected() (*sandbox.Policy, error) {
 	}
 	tag := p.final
 	seen := make(map[string]bool)
-	for p.selectors[tag] {
+	for {
+		member, isSelector := p.selectors[tag]
+		if !isSelector {
+			break
+		}
+		// Clash can change a selector without entering sandboxSelection. Only
+		// singleton selectors cannot change the authorized route in this way.
+		if p.externalController && member == "" {
+			return nil, errors.New("external Clash control requires a single VLESS/Reality exit at every selector")
+		}
 		if seen[tag] {
 			return nil, errors.New("sandbox selector cycle")
 		}
@@ -230,8 +275,14 @@ func (p *sandboxProfile) selected() (*sandbox.Policy, error) {
 			return nil, errors.New("sandbox selector has no proxy")
 		}
 		tag = selected.Tag()
+		if p.externalController && tag != member {
+			return nil, errors.New("the selected proxy does not match the sole configured exit")
+		}
 	}
 	if policy := p.leaves[tag]; policy != nil {
+		if p.externalController && policy.Type != "vless" {
+			return nil, errors.New("external Clash control requires a single VLESS/Reality exit")
+		}
 		return policy, nil
 	}
 	if err := p.errors[tag]; err != nil {
@@ -250,6 +301,12 @@ func sandboxPublishProfile(ctx context.Context, profile *sandboxProfile) {
 	}
 	sandboxLeases.profile = profile
 	sandboxLeases.policy = policy
+	sandboxLeases.offlineReason = ""
+	if err != nil {
+		// selected() and the leaf validators use fixed diagnostics which can be
+		// sent to users without disclosing tags, credentials or endpoint values.
+		sandboxLeases.offlineReason = err.Error()
+	}
 	sandboxLeases.revision++
 	revision := sandboxLeases.revision
 	sessions := sandboxSessionsLocked()
@@ -286,6 +343,7 @@ func sandboxEmergencyRevoke() {
 	revision := sandboxLeases.revision
 	sandboxLeases.profile = nil
 	sandboxLeases.policy = nil
+	sandboxLeases.offlineReason = ""
 	sessions := sandboxSessionsLocked()
 	sandboxLeases.Unlock()
 	sandboxUpdate(sessions, revision, nil)
@@ -355,6 +413,13 @@ func (s *CoreService) runIsolated(request *SandboxRunRequest, stream grpc.Server
 				state = SandboxState_SANDBOX_EXITED
 			case "output":
 				state = SandboxState_SANDBOX_OUTPUT
+			}
+			if state == SandboxState_SANDBOX_OFFLINE && event.Error == "" {
+				sandboxLeases.Lock()
+				if event.Revision == sandboxLeases.revision {
+					event.Error = sandboxLeases.offlineReason
+				}
+				sandboxLeases.Unlock()
 			}
 			if err := stream.Send(&SandboxEvent{State: state, Revision: event.Revision, Stdout: event.Stdout, Stderr: event.Stderr, ExitCode: int32(event.ExitCode), Message: event.Error}); err != nil {
 				return err
