@@ -132,11 +132,6 @@ func startPrivateDisplay(ctx context.Context) (_ *privateDisplay, resultErr erro
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	weston, err := openSystemWeston(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer weston.Close()
 	runtimeDir, err := openDesktopRuntime()
 	if err != nil {
 		return nil, err
@@ -173,24 +168,55 @@ func startPrivateDisplay(ctx context.Context) (_ *privateDisplay, resultErr erro
 		return nil, err
 	}
 	defer filter.Close()
-	files := []*os.File{parent, filter, weston, d.owner.dir, d.owner.lease}
+	files := []*os.File{parent, filter, d.owner.dir, d.owner.lease}
+	// The four session descriptors above have their own owners. Release
+	// all runtime contents here, including a partially prepared archive.
+	ownsPortableSlot := false
+	releaseRuntime := sync.OnceFunc(func() {
+		for _, file := range files[4:] {
+			file.Close()
+		}
+		if ownsPortableSlot {
+			<-portableWestonStartup
+		}
+	})
+	defer releaseRuntime()
 	args := []string{"--unshare-user", "--unshare-net", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		"--disable-userns", "--assert-userns-disabled", "--cap-drop", "ALL", "--new-session", "--die-with-parent",
 		"--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "LANG", "C.UTF-8",
 		"--setenv", "HOME", "/home/display", "--setenv", "XDG_RUNTIME_DIR", "/run/display",
-		"--seccomp", "4", "--ro-bind", "/usr", "/usr", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+		"--seccomp", "4", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
 		"--dir", "/etc", "--dir", "/home/display", "--chdir", "/home/display", "--tmpfs", "/run",
 		"--dir", "/run/parent", "--ro-bind-fd", "3", "/run/parent/display",
-		"--bind-fd", "6", "/run/display", "--ro-bind-fd", "5", "/usr/bin/weston", "--sync-fd", "7"}
-	args, err = appendSystemLibraryMounts(args)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkPrivateWestonVersion(ctx, args, files); err != nil {
-		return nil, err
-	}
-	if _, err := filter.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+		"--bind-fd", "5", "/run/display", "--sync-fd", "6"}
+	if os.Getenv("APPIMAGE") != "" {
+		select {
+		case portableWestonStartup <- struct{}{}:
+			ownsPortableSlot = true
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		args, err = mountPortableWeston(ctx, args, &files)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		weston, err := openSystemWeston(ctx)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, weston)
+		args = append(args, "--ro-bind", "/usr", "/usr", "--ro-bind-fd", "7", "/usr/bin/weston")
+		args, err = appendSystemLibraryMounts(args)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkPrivateWestonVersion(ctx, args, files); err != nil {
+			return nil, err
+		}
+		if _, err := filter.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
 	}
 	cmd := exec.Command("/usr/bin/bwrap", append(args, "--", "/usr/bin/weston", "--backend=wayland", "--display=/run/parent/display",
 		"--width=640", "--height=480", "--renderer=pixman", "--shell=kiosk", "--socket="+privateWaylandSocket,
@@ -212,7 +238,9 @@ func startPrivateDisplay(ctx context.Context) (_ *privateDisplay, resultErr erro
 		d.waitErr = err
 		close(d.done)
 	}()
-	if err = <-started; err != nil {
+	err = <-started
+	releaseRuntime()
+	if err != nil {
 		return nil, err
 	}
 	go func() {
