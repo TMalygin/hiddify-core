@@ -248,10 +248,32 @@ preserves the application and its private profile. This mode requires Linux
 TCP socket diagnostics with `CONFIG_INET_DIAG_DESTROY`. See the upstream
 [namespace sandbox](https://github.com/chromium/chromium/blob/143.0.7499.169/sandbox/linux/services/namespace_sandbox.cc).
 
-This stage targets headless rendering. Desktop windows, host clipboard, sound
-and Electron application integration require separate capabilities. Graphical
-launches still have no display endpoint. Existing namespace/resource limits
-are kernel limits, without a per-application quota.
+Headless rendering uses the browser policy above. A graphical session also
+needs the private display option below. Existing namespace and resource limits
+are kernel limits without a per-application quota.
+
+### Private Wayland windows
+
+Set both `chromium_sandbox` and `private_wayland` (field 5) on the authenticated
+`RunSandbox` request. Supply the supported browser executable and its private
+application ID. The core selects the Wayland backend for Chromium. Omit the
+headless and DOM dump switches for this mode.
+
+The core starts a separate Weston compositor for each browser. Weston uses its
+Wayland backend, software rendering and kiosk shell. A rootless bubblewrap
+process gives it a private network, PID and filesystem environment and access
+to the current user's parent display socket. The core derives that socket from
+its own desktop session. The request contains no display path. The browser
+receives a read-only mount of its own compositor's listening socket at
+`/run/sandbox/wayland-0`. Its renderers keep Chromium's native sandbox.
+
+The private display lives as long as the browser session. Profile loss revokes
+network access while the window stays available. Cancelling the stream closes
+the browser and its compositor. Loss of the compositor ends that GUI session.
+This mode requires a Wayland desktop and Weston 15 or newer at `/usr/bin/weston`.
+An unavailable parent display or compositor fails the request. Packaging Weston
+for AppImage, host clipboard and audio mediation, and support for Electron
+applications are separate integration work.
 
 ## Isolation and prerequisites
 
@@ -340,6 +362,12 @@ with the CLI tags. Run `HIDDIFY_CHROMIUM_DRIVER=/absolute/path/driver python3 -m
 The first suite uses private profiles and a local test proxy and checks real
 renderer processes. The second checks the outer policy inside a disposable
 filesystem with a synthetic ELF and inert syscall arguments.
+
+The window tests use the production CLI with mTLS, installed browsers, a
+signed Weston package and an isolated virtual parent display. Run
+`python3 tests/fixtures/wayland_package_namespace.py test_sandbox_wayland` with the environment
+documented in the fixture. The tests check the pixels presented by each
+browser, network and display isolation, cancellation and unavailable displays.
 
 ## Work required before app integration
 

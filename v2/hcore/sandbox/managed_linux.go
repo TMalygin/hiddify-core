@@ -75,6 +75,7 @@ type ApplicationOptions struct {
 	ID              string
 	ExecutableRoot  string
 	ChromiumSandbox bool
+	PrivateWayland  bool
 }
 
 // Reexec arguments carry the validated layout. Directory descriptors stay in
@@ -83,11 +84,14 @@ type sessionLayout struct {
 	persistent bool
 	bundleRoot string
 	chromium   bool
+	wayland    bool
 }
 
 func (layout sessionLayout) reexec(role string, command []string) *exec.Cmd {
 	mode := "__"
 	switch {
+	case layout.wayland:
+		mode += "wayland_"
 	case layout.chromium:
 		mode += "chromium_"
 	case layout.bundleRoot != "":
@@ -117,6 +121,9 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	}
 	if size > 64*1024 {
 		return nil, errors.New("sandbox command exceeds 64 KiB")
+	}
+	if options.PrivateWayland && !options.ChromiumSandbox {
+		return nil, errors.New("private_wayland requires chromium_sandbox and application_id")
 	}
 	if options.ChromiumSandbox {
 		if err := validateChromiumRequest(command, options); err != nil {
@@ -170,7 +177,7 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	if err != nil {
 		return nil, err
 	}
-	layout := sessionLayout{persistent: storage != nil, bundleRoot: options.ExecutableRoot, chromium: options.ChromiumSandbox}
+	layout := sessionLayout{persistent: storage != nil, bundleRoot: options.ExecutableRoot, chromium: options.ChromiumSandbox, wayland: options.PrivateWayland}
 	process := layout.reexec("session", command)
 	files := []*os.File{statusWrite}
 	if storage != nil {
@@ -187,10 +194,25 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 		statusWrite.Close()
 		return nil, err
 	}
-	if err = ctx.Err(); err == nil && storage != nil {
+	// Validate and start the display before writing the persistent launch lease.
+	// The guardian receives only the private listener, never the desktop socket.
+	var display *privateDisplay
+	if layout.wayland {
+		display, err = startPrivateDisplay(ctx)
+		if err == nil {
+			process.ExtraFiles = append(process.ExtraFiles, display.socket)
+		}
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err == nil && storage != nil {
 		err = storage.prepare()
 	}
 	if err != nil {
+		if display != nil {
+			display.close()
+		}
 		input.Close()
 		statusRead.Close()
 		statusWrite.Close()
@@ -211,10 +233,12 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 			// Wait joins the stdout/stderr copy goroutines. The status reader
 			// independently reaches EOF and retains EXITED rather than exposing
 			// it early. Both producers must finish before terminal delivery.
-			waitErr := process.Wait()
+			waitErr, displayLost := m.waitForGuardian(display)
 			result := <-completion
 			var final ManagedEvent
-			if result.err != nil {
+			if displayLost {
+				final = ManagedEvent{State: "error", Error: "the private Wayland display closed while the browser was running"}
+			} else if result.err != nil {
 				final = ManagedEvent{State: "error", Error: result.err.Error()}
 			} else if err := guardianExitError(waitErr, result.terminal.ExitCode); err != nil {
 				final = ManagedEvent{Revision: result.terminal.Revision, State: "error", Error: err.Error()}
@@ -228,6 +252,8 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 			case m.events <- final:
 			default:
 			}
+		} else if display != nil {
+			display.close()
 		}
 		close(m.events)
 		close(m.done)
@@ -262,6 +288,25 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 		}
 	}
 	return m, nil
+}
+
+// Keep the thread which started the guardian alive until it exits (Pdeathsig).
+// Losing the private display ends this GUI session. Profile changes only affect
+// the proxy worker and never signal this process pair.
+func (m *Managed) waitForGuardian(display *privateDisplay) (waitErr error, displayLost bool) {
+	if display == nil {
+		return m.process.Wait(), false
+	}
+	defer display.close()
+	exited := make(chan error, 1)
+	go func() { exited <- m.process.Wait() }()
+	select {
+	case err := <-exited:
+		return err, false
+	case <-display.done:
+		m.stop()
+		return <-exited, true
+	}
 }
 
 func authorizeStoredApplication(ctx context.Context, managed *Managed, storage *applicationStorage, infoRead, blockWrite *os.File) error {

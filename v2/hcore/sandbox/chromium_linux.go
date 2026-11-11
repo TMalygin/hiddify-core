@@ -38,6 +38,9 @@ func validateChromiumRequest(command []string, options ApplicationOptions) error
 		if strings.IndexByte(arg, 0) >= 0 {
 			return errors.New("invalid Chromium launch argument")
 		}
+		if options.PrivateWayland && (arg == "--headless" || arg == "--headless=new" || arg == "--dump-dom") {
+			return errors.New("headless Chromium arguments are incompatible with private_wayland")
+		}
 		switch arg {
 		case "--headless", "--headless=new", "--dump-dom", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--version", "about:blank":
 			continue
