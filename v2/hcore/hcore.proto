@@ -142,6 +142,7 @@ message OutboundInfo {
   bool download_speed_cached = 24; // download_speed is from an earlier run, kept until a new test
   string error = 25; // why it failed: the error of its last URL test, or why it is not ready (WARP, MASQUE); empty when it works or does not say
   int32 sort_delay = 26; // what to sort by: url_test_delay, or the delay cached from the previous run, which is not shown; 0 untested
+  bool resting = 27; // keep top left it at rest: not loaded, not tested and not used, until it is selected, tested by its tag or pinned
 }
 
 message IpInfo {
@@ -163,7 +164,7 @@ message OutboundGroup {
   bool selectable=4;
   bool Is_expand=5;
   repeated OutboundInfo items = 6;
-  
+  bool keep_top_picking = 7; // keep top still goes through the proxies: which of them stay in use is not settled
 }
 message OutboundGroupList{
   repeated OutboundGroup items = 1;
@@ -230,6 +231,7 @@ message SelectOutboundRequest {
 
 message UrlTestRequest {
   string tag = 1;
+  repeated string tags = 2; // instead of tag: these proxies, a few at a time, also the ones keep top left at rest
 }
 
 message SpeedTestRequest {
@@ -291,13 +293,22 @@ message CrashReportList {
 
 message ExportDiagnosticsRequest {
   string destination_path = 1;         // where to write the zip; empty is a file in the temp directory
-  map<string, bytes> extra_files = 2;  // more files for the zip, by name (the app's logs, another core's dump)
+  map<string, bytes> extra_files = 2;  // more files for the zip's sensitive part, by name (the app's logs, another core's dump)
   bool inline = 3;                     // also return the zip's bytes
+  // leave the sensitive part (config, logs, crashes, extra files) in the clear: for the user to
+  // look at, or for a zip that goes inside another core's report, which encrypts it
+  bool unencrypted = 4;
+  // more files for the zip that are not sensitive, kept readable outside the encrypted part (the
+  // app's own exceptions with their stack traces)
+  map<string, bytes> generic_files = 5;
 }
 
 message ExportDiagnosticsResponse {
   string path = 1;
   bytes content = 2;
+  // the sensitive part is sensitive.encrypted.age, encrypted to the build's diagnostics key; false
+  // when it was asked unencrypted or the build has no key
+  bool encrypted = 3;
 }
 
 message LANIPResponse {
