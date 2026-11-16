@@ -3,18 +3,21 @@
 package hutils
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"syscall"
 
 	acl "github.com/hectane/go-acl"
+	"github.com/sagernet/sing-box/experimental/libbox"
 
 	"golang.org/x/sys/windows"
 )
 
+// RedirectStderr sends a Go crash (panic, fatal error) to path as well, as on the other systems.
+// The desktop core's stderr goes to NUL once it is set up (hprocess.DetachStdio), so without it a
+// crash left no trace and the app could only show the exit code (hiddify-app#2517).
 func RedirectStderr(path string) error {
-	return fmt.Errorf("not supported on windows")
+	return libbox.RedirectStderr(path)
 }
 
 func IsAdmin() bool {
@@ -32,7 +35,7 @@ func IsAdmin() bool {
 
 var TunAllowed = IsAdmin
 
-// ExecuteCmd shows one UAC prompt and runs the already-installed HiddifyCli. It does not copy
+// ExecuteCmd shows one UAC prompt and runs the already-installed HiddifyCore.exe. It does not copy
 // binaries into ProgramData or %TEMP% (both patterns raise antivirus false positives).
 func ExecuteCmd(exe string, background bool, args ...string) (string, error) {
 	verb := "runas"

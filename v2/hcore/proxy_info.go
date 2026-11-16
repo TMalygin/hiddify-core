@@ -18,6 +18,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -65,11 +66,26 @@ func memberRank(history adapter.URLTestHistoryStorage, tag string) uint32 {
 	return uint32(balancer.Rank(his))
 }
 
+// memberHistory is the result of a member a group uses: none for one keep top left at rest, which
+// no group uses, whatever its last ping was.
 func memberHistory(history adapter.URLTestHistoryStorage, tag string) *adapter.URLTestHistory {
-	if history == nil {
+	if history == nil || proxyRests(tag) {
 		return nil
 	}
 	return history.LoadURLTestHistory(tag)
+}
+
+// proxyRests reports a proxy keep top left at rest (monitoring.Parked).
+func proxyRests(tag string) bool {
+	if static == nil {
+		return false
+	}
+	if ctx := static.Context(); ctx != nil {
+		if monitor := monitoring.Get(ctx); monitor != nil {
+			return monitor.Parked(tag)
+		}
+	}
+	return false
 }
 
 // spreadMember is the member a balancer that spreads connections stands for, in the app: its
@@ -166,6 +182,7 @@ func (h *HiddifyInstance) GetProxyInfo(url_test_history *adapter.URLTestHistory,
 	out.Tag = detour.Tag()
 	out.Type = adapter.DisplayType(detour) // the type and its details, and why it failed; the status is out.Status
 	out.Status = Status(detour.Status())
+	out.Resting = proxyRests(out.Tag)
 	if group, isGroup := detour.(adapter.OutboundGroup); isGroup {
 		out.IsGroup = true
 		gnow := groupNow(group)
@@ -240,25 +257,32 @@ func (h *HiddifyInstance) GetAllProxiesInfo(hismap map[string]*adapter.URLTestHi
 	}
 	cacheFile := service.FromContext[adapter.CacheFile](ctx)
 
-	outbounds_converted := make(map[string]*OutboundInfo, 0)
-	var iGroups []adapter.OutboundGroup
-	for _, it := range box.Endpoint().Endpoints() {
-		his, _ := hismap[it.Tag()]
-		outbounds_converted[it.Tag()] = h.GetProxyInfo(his, it)
-	}
-	for _, it := range box.Outbound().Outbounds() {
-		his, _ := hismap[it.Tag()]
-		// a balancer spreading connections shows the ping of the member it stands for, its fastest,
-		// as its speeds do (speedTestTagOf), not of the one it picked last
-		if group, isGroup := it.(adapter.OutboundGroup); isGroup && connectedVia(group) == "" {
-			if member := resolveActiveOutbound(box, it.Tag(), h.UrlTestHistory()); member != it.Tag() {
-				if memberHis, ok := hismap[member]; ok && memberHis != nil {
-					his = memberHis
+	// A proxy's info is made when a group lists it, once: every one for the full list, but for
+	// the main list only the one each group selected. It made them all for both, and of a big
+	// profile's hundreds the main list, sent as often as the full one, used a handful.
+	converted := make(map[string]*OutboundInfo)
+	infoOf := func(tag string) *OutboundInfo {
+		if info, done := converted[tag]; done {
+			return info
+		}
+		var info *OutboundInfo
+		if it, loaded := box.Outbound().Outbound(tag); loaded { // an outbound, or an endpoint
+			his := hismap[tag]
+			// a balancer spreading connections shows the ping of the member it stands for, its
+			// fastest, as its speeds do (speedTestTagOf), not of the one it picked last
+			if group, isGroup := it.(adapter.OutboundGroup); isGroup && connectedVia(group) == "" {
+				if member := resolveActiveOutbound(box, tag, h.UrlTestHistory()); member != tag {
+					if memberHis, ok := hismap[member]; ok && memberHis != nil {
+						his = memberHis
+					}
 				}
 			}
+			info = h.GetProxyInfo(his, it)
 		}
-		outbounds_converted[it.Tag()] = h.GetProxyInfo(his, it)
+		converted[tag] = info
+		return info
 	}
+	var iGroups []adapter.OutboundGroup
 	for _, it := range box.Outbound().Outbounds() {
 		if group, isGroup := it.(adapter.OutboundGroup); isGroup {
 			iGroups = append(iGroups, group)
@@ -276,9 +300,16 @@ func (h *HiddifyInstance) GetAllProxiesInfo(hismap map[string]*adapter.URLTestHi
 		}
 	}
 
+	keepTopPicking := false
+	if ctx := h.Context(); ctx != nil {
+		if monitor := monitoring.Get(ctx); monitor != nil {
+			keepTopPicking = monitor.KeepTopPicking()
+		}
+	}
 	var groups OutboundGroupList
 	for _, iGroup := range iGroups {
 		var group OutboundGroup
+		group.KeepTopPicking = keepTopPicking
 		group.Tag = iGroup.Tag()
 		group.Type = iGroup.Type()
 		_, group.Selectable = iGroup.(*G.Selector)
@@ -305,7 +336,7 @@ func (h *HiddifyInstance) GetAllProxiesInfo(hismap map[string]*adapter.URLTestHi
 			if onlyGroupitems && itemTag != selectedTag {
 				continue
 			}
-			pinfo := outbounds_converted[itemTag]
+			pinfo := infoOf(itemTag)
 			if pinfo == nil {
 				continue
 			}
@@ -322,7 +353,9 @@ func (h *HiddifyInstance) GetAllProxiesInfo(hismap map[string]*adapter.URLTestHi
 
 	}
 	if onlyGroupitems {
-		groups.ChainHop = outbounds_converted[chainHop(box)] // nil with the chain off
+		if hop := chainHop(box); hop != "" { // none with the chain off
+			groups.ChainHop = infoOf(hop)
+		}
 	}
 
 	return &groups
@@ -400,7 +433,21 @@ func (h *HiddifyInstance) AllProxiesInfoStream(stream grpc.ServerStreamingServer
 	keepActive := time.NewTicker(time.Minute)
 	defer keepActive.Stop()
 
-	if err := stream.Send(h.GetAllProxiesInfo(monitor.OutboundsHistory(""), onlyMain)); err != nil {
+	// The main list (each group's selected proxy, for the home screen) is not sent again while it
+	// says the same: during a test of a big profile the monitoring has news every second, nearly
+	// all of it about proxies the main list does not show, and every send woke the app to decode
+	// it and draw the home screen again. The full list changes with every result, so comparing it
+	// would only cost.
+	var sent *OutboundGroupList
+	send := func() error {
+		info := h.GetAllProxiesInfo(monitor.OutboundsHistory(""), onlyMain)
+		if onlyMain && sent != nil && info != nil && proto.Equal(sent, info) {
+			return nil
+		}
+		sent = info
+		return stream.Send(info)
+	}
+	if err := send(); err != nil {
 		return err
 	}
 
@@ -432,10 +479,6 @@ func (h *HiddifyInstance) AllProxiesInfoStream(stream grpc.ServerStreamingServer
 		timerCh = nil
 	}
 	defer stopTimer()
-
-	send := func() error {
-		return stream.Send(h.GetAllProxiesInfo(monitor.OutboundsHistory(""), onlyMain))
-	}
 
 	for {
 		select {

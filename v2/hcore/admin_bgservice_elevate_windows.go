@@ -22,12 +22,12 @@ import (
 // PowerShell", "privilege escalation via Start-Process") are written for.
 func elevateAdminBgInstall(cliPath, owner string) error {
 	args := "admin_bgservice install " + quoteWindowsArg(owner)
-	// HiddifyAdmin.exe (GUI subsystem, requireAdministrator manifest, app icon) is the
-	// binary meant to be shown in the UAC dialog; it forwards to the same parseCli().
-	// Fall back to HiddifyCli.exe for packages that do not ship it.
+	// HiddifyAdmin.exe (GUI subsystem, requireAdministrator manifest, app icon) is the binary
+	// shown in the UAC dialog and the one the service is registered with; it forwards to the
+	// same parseCli(). Every package ships it beside HiddifyCore.exe: no fallback to HiddifyCore.exe.
 	exe := filepath.Join(filepath.Dir(cliPath), "HiddifyAdmin.exe")
-	if _, statErr := os.Stat(exe); statErr != nil {
-		exe = cliPath
+	if _, err := os.Stat(exe); err != nil {
+		return fmt.Errorf("HiddifyAdmin.exe could not be found in %s; reinstall Hiddify: %w", filepath.Dir(cliPath), err)
 	}
 	exitCode, err := shellExecuteRunAsWait(exe, args)
 	if err != nil {
@@ -59,6 +59,7 @@ const (
 	seeMaskNoCloseProcess = 0x00000040
 	seeMaskNoAsync        = 0x00000100
 	seeMaskFlagNoUI       = 0x00000400
+	seeMaskNoZoneChecks   = 0x00800000
 )
 
 type shellExecuteInfo struct {
@@ -85,8 +86,13 @@ func shellExecuteRunAsWait(exe, params string) (uint32, error) {
 	verb, _ := syscall.UTF16PtrFromString("runas")
 	file, _ := syscall.UTF16PtrFromString(exe)
 	parameters, _ := syscall.UTF16PtrFromString(params)
+	// NoZoneChecks: HiddifyAdmin.exe from a downloaded portable zip or a network share carries the
+	// mark of the web. ShellExecuteEx then wants to show the "Open File - Security Warning" dialog,
+	// which FlagNoUI suppresses, and returns ERROR_CANCELLED as if the UAC prompt was refused
+	// ("Administrator permission was not given"). The app beside it is already running, so the
+	// check adds nothing; the UAC prompt itself still shows.
 	info := shellExecuteInfo{
-		fMask:        seeMaskNoCloseProcess | seeMaskNoAsync | seeMaskFlagNoUI,
+		fMask:        seeMaskNoCloseProcess | seeMaskNoAsync | seeMaskFlagNoUI | seeMaskNoZoneChecks,
 		lpVerb:       verb,
 		lpFile:       file,
 		lpParameters: parameters,

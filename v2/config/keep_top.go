@@ -10,10 +10,13 @@ import (
 	"github.com/sagernet/sing-box/option"
 )
 
-// With keep-top, a profile with many proxies runs only its fastest few once their first
-// pings are in (hcore picks them). These helpers find a profile's proxies and drop the others from
-// its options before the config is built; the extra security and unblocker hops are not the
-// profile's, so they always stay.
+// With keep-top, a profile with many proxies uses only its fastest few. The core finds them
+// itself (sing-box's keep top, experimental.monitoring.keep_top): the config keeps every proxy,
+// the ones keep top manages as lazy outbounds and endpoints, which the core creates when a
+// connection or a test goes through them and closes when nothing does, so no config changes while
+// it picks. These helpers find a profile's proxies and turn keep top on; for keep chosen they drop the others
+// from its options before the config is built. The extra security and unblocker hops are not the
+// profile's, so they always run: they are never lazy and never rest (isChainHop).
 
 // KeepTopAnswering is the keep-top that keeps every proxy answering its first ping and stops
 // the ones that do not.
@@ -34,6 +37,134 @@ func UserProxyTags(input *option.Options) []string {
 		}
 	}
 	return tags
+}
+
+// lazyTypes are the outbounds the core can create when they are used and close when they are not:
+// a connection through one needs nothing that takes long to set up, and nothing else in the core
+// holds it. Not the outbounds that search before they work (Psiphon, Tor, the DNS tunnels): those
+// run for the whole run, and keep top leaves them alone.
+var lazyTypes = map[string]bool{
+	C.TypeVLESS: true, C.TypeVMess: true, C.TypeTrojan: true, C.TypeShadowsocks: true,
+	C.TypeSOCKS: true, C.TypeHTTP: true, C.TypeHysteria: true, C.TypeHysteria2: true,
+	C.TypeTUIC: true, C.TypeAnyTLS: true, C.TypeShadowTLS: true, C.TypeSSH: true,
+	C.TypeNaive: true, C.TypeMieru: true, C.TypeSnell: true, C.TypeTrustTunnel: true,
+	C.TypeSudoku: true,
+}
+
+// lazyEndpointTypes are the endpoints the core can create the same way: the clients, whose tunnel
+// comes up when the first connection needs it (the core makes the ones that connect in the
+// background wait for it). WARP too: it registers and scans before it works, and keep top lets it
+// go on while fewer proxies answer than it keeps. Not the endpoints in server mode (a WireGuard
+// that listens, the servers, a Tailscale node, which peers reach).
+var lazyEndpointTypes = map[string]bool{
+	C.TypeWireGuard: true, C.TypeAwg: true, C.TypeOpenVPNClient: true, C.TypeOpenConnect: true,
+	C.TypeMASQUEClient: true, C.TypeWARP: true,
+}
+
+// canBeLazyEndpoint reports a client endpoint that keep top can manage: of lazyEndpointTypes, and
+// not listening for peers.
+func canBeLazyEndpoint(end *option.Endpoint) bool {
+	if !lazyEndpointTypes[end.Type] {
+		return false
+	}
+	switch options := end.Options.(type) {
+	case *option.WireGuardEndpointOptions:
+		return options.ListenPort == 0
+	case *option.AwgEndpointOptions:
+		return options.ListenPort == 0
+	case *option.WARPEndpointOptions:
+		return options.ListenPort == 0
+	}
+	return true
+}
+
+// isChainHop reports an extra security or unblocker hop, or one of the hops of its selectable
+// mode. A hop carries every connection, and a WARP hop registers and connects for a long time
+// before it works: put to rest, or closed when idle, its registration is cut ("context
+// canceled") and everything through it fails. Keep top never makes one lazy.
+func isChainHop(tag string) bool {
+	return IsChainExtraSecurityTag(tag) || IsChainUnblockerTag(tag)
+}
+
+// LazyProxyTags are the proxies of the profile that keep top manages: the ones of UserProxyTags
+// that can be lazy outbounds or lazy endpoints, in the profile's order (outbounds, then endpoints,
+// as UserProxyTags lists them).
+func LazyProxyTags(input *option.Options) []string {
+	var tags []string
+	for _, out := range input.Outbounds {
+		if isUserProxy(out.Tag, out.Type) && !isDNSOutbound(out) && lazyTypes[out.Type] && !isChainHop(out.Tag) {
+			tags = append(tags, out.Tag)
+		}
+	}
+	for i := range input.Endpoints {
+		if end := &input.Endpoints[i]; isUserProxy(end.Tag, end.Type) && canBeLazyEndpoint(end) && !isChainHop(end.Tag) {
+			tags = append(tags, end.Tag)
+		}
+	}
+	return tags
+}
+
+// ApplyKeepTop turns keep top on in a built config, when the settings ask for it: the proxies it
+// manages (candidates, LazyProxyTags) become lazy outbounds and endpoints, and the monitoring gets the keep top
+// options, by which the core finds the fastest of them and leaves the others at rest. It returns
+// how many it manages; 0 when keep top is not on, and then nothing in the config is lazy.
+//
+// A profile with no more proxies than the count keeps has none to rest: keep top is off for it and
+// none of them is lazy, so none is closed when idle. The extra security and unblocker hops are
+// never lazy (isChainHop), whatever candidates says.
+func ApplyKeepTop(options *option.Options, hopt *HiddifyOptions, candidates []string) int {
+	if options.Experimental == nil || options.Experimental.Monitoring == nil {
+		return 0 // nothing would test them
+	}
+	count := hopt.KeepTop
+	answering := count == KeepTopAnswering
+	var countries []string
+	for _, code := range hopt.KeepTopCountries {
+		if code = strings.ToUpper(strings.TrimSpace(code)); len(code) == 2 && !slices.Contains(countries, code) {
+			countries = append(countries, code)
+		}
+	}
+	slices.Sort(countries)
+	if count <= 0 && !answering && len(countries) == 0 {
+		return 0
+	}
+	wanted := make(map[string]bool, len(candidates))
+	for _, tag := range candidates {
+		wanted[tag] = true
+	}
+	var managed []*option.Outbound
+	for i := range options.Outbounds {
+		if out := &options.Outbounds[i]; wanted[out.Tag] && lazyTypes[out.Type] && !isChainHop(out.Tag) {
+			managed = append(managed, out)
+		}
+	}
+	var managedEndpoints []*option.Endpoint
+	for i := range options.Endpoints {
+		if end := &options.Endpoints[i]; wanted[end.Tag] && canBeLazyEndpoint(end) && !isChainHop(end.Tag) {
+			managedEndpoints = append(managedEndpoints, end)
+		}
+	}
+	if len(managed)+len(managedEndpoints) == 0 {
+		return 0
+	}
+	if count > 0 && len(countries) == 0 && len(managed)+len(managedEndpoints) <= count {
+		return 0 // all of them are kept: none rests, and none sleeps
+	}
+	for _, out := range managed {
+		out.Lazy = true
+	}
+	for _, end := range managedEndpoints {
+		end.Lazy = true
+	}
+	options.Experimental.Monitoring.KeepTop = &option.KeepTopOptions{
+		Count:     max(count, 0),
+		Answering: answering,
+		Countries: countries,
+		Batch:     hopt.KeepTopBatch,
+		Quick:     hopt.KeepTopQuick,
+		Pinned:    hopt.KeepTopPinned,
+	}
+	return len(managed) + len(managedEndpoints)
 }
 
 // ChosenProxies are the tags of chosen that are the profile's proxies (UserProxyTags), to keep.

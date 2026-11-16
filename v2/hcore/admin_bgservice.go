@@ -3,6 +3,7 @@ package hcore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -298,11 +299,12 @@ func ensureAdminBgServiceInstalled(cliPath, ownerUser string) error {
 func runCli(cliPath string, args ...string) error {
 	cmd := exec.Command(cliPath, args...)
 	cmd.Dir = filepath.Dir(cliPath)
+	prepareCliCommand(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
-			return err
+			return explainCliError(cliPath, err)
 		}
 		return fmt.Errorf("%s", msg)
 	}
@@ -349,9 +351,24 @@ func writeAdminBgConnectRequest(req *EnsureAdminBgServiceRequest) (string, error
 	return path, nil
 }
 
+// errNoAdminPrompt: nothing on this system can ask for the administrator password (Linux without
+// pkexec, a password dialog for sudo, or passwordless sudo). Not a refusal: the user has to install something.
+var errNoAdminPrompt = errors.New("VPN mode needs pkexec to ask for the administrator password, and it is not installed: " +
+	"install the pkexec package (polkit) and try again, or use system proxy mode")
+
+// errNoAdminAgent: an administrator prompt is installed but cannot be shown (Linux: pkexec without a
+// polkit agent, and no desktop for sudo's). Not a refusal: the user has to start the app another way.
+var errNoAdminAgent = errors.New("could not ask for the administrator password")
+
+// errAdminPromptRefused: the user dismissed the administrator prompt, or the password was wrong.
+var errAdminPromptRefused = errors.New("could not install the VPN service; allow the administrator prompt and try again")
+
 func isPermissionDenied(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, errNoAdminPrompt) || errors.Is(err, errNoAdminAgent) {
 		return false
+	}
+	if errors.Is(err, errAdminPromptRefused) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, needle := range []string{
