@@ -33,6 +33,7 @@ import (
 type sandboxProfile struct {
 	final              string
 	leaves             map[string]*sandbox.Policy
+	domainConfigs      map[string]*option.VLESSOutboundOptions
 	selectors          map[string]string // sole configured member, or "" for a mutable group
 	errors             map[string]error
 	blocked            error
@@ -118,7 +119,10 @@ func sandboxUpdate(sessions []*sandbox.Managed, revision uint64, policy *sandbox
 
 // Called only after the engine has accepted a config, with static.lock held.
 func sandboxPublish(ctx context.Context, options *option.Options) {
-	profile := &sandboxProfile{leaves: make(map[string]*sandbox.Policy), selectors: make(map[string]string), errors: make(map[string]error)}
+	profile := &sandboxProfile{
+		leaves: make(map[string]*sandbox.Policy), domainConfigs: make(map[string]*option.VLESSOutboundOptions),
+		selectors: make(map[string]string), errors: make(map[string]error),
+	}
 	profile.externalController = options.Experimental != nil && options.Experimental.ClashAPI != nil && options.Experimental.ClashAPI.ExternalController != ""
 	if options.Route != nil {
 		profile.final = options.Route.Final
@@ -148,7 +152,7 @@ func sandboxPublish(ctx context.Context, options *option.Options) {
 			profile.selectors[tag] = member
 			continue
 		}
-		policy, err := sandboxProfileLeaf(outbound)
+		policy, err := profile.leaf(tag, outbound)
 		if err != nil {
 			profile.errors[tag] = err
 		} else {
@@ -172,7 +176,7 @@ func sandboxLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
 		return nil, errors.New("sandbox DNS settings are unavailable")
 	}
 	if outbound.Type == "vless" {
-		policy, err := sandboxRealityDefinition(outbound)
+		policy, _, err := sandboxRealityDefinition(outbound)
 		if err != nil {
 			return nil, err
 		}
@@ -201,18 +205,18 @@ func sandboxWorkerPolicy(policy sandbox.Policy) (*sandbox.Policy, error) {
 	return sandbox.ParsePolicy(bytes.NewReader(content))
 }
 
-func sandboxRealityDefinition(outbound option.Outbound) (*sandbox.Policy, error) {
+func sandboxRealityDefinition(outbound option.Outbound) (*sandbox.Policy, *option.VLESSOutboundOptions, error) {
 	vless, ok := outbound.Options.(*option.VLESSOutboundOptions)
 	if !ok || vless == nil || vless.TLS == nil || vless.TLS.UTLS == nil || vless.TLS.Reality == nil {
-		return nil, errors.New("sandbox VLESS requires explicit Reality and uTLS settings")
+		return nil, nil, errors.New("sandbox VLESS requires explicit Reality and uTLS settings")
 	}
 	if vless.Encryption != "" && vless.Encryption != "none" {
-		return nil, errors.New("sandbox VLESS does not support additional encryption settings")
+		return nil, nil, errors.New("sandbox VLESS does not support additional encryption settings")
 	}
 	if vless.PacketEncoding != nil && *vless.PacketEncoding != "xudp" {
 		// nil is the engine's XUDP default; an explicitly empty string is native
 		// UDP, which is a different protocol and must not be silently replaced.
-		return nil, errors.New("sandbox VLESS supports XUDP only")
+		return nil, nil, errors.New("sandbox VLESS supports XUDP only")
 	}
 	tls := vless.TLS
 	allowedTLS := &option.OutboundTLSOptions{
@@ -229,21 +233,24 @@ func sandboxRealityDefinition(outbound option.Outbound) (*sandbox.Policy, error)
 		ServerOptions: option.ServerOptions{Server: vless.Server, ServerPort: vless.ServerPort},
 		UUID:          vless.UUID, Flow: vless.Flow, Encryption: vless.Encryption,
 		OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{TLS: allowedTLS},
-		PacketEncoding:              vless.PacketEncoding,
+	}
+	if vless.PacketEncoding != nil {
+		encoding := *vless.PacketEncoding
+		allowed.PacketEncoding = &encoding
 	}
 	if !reflect.DeepEqual(*vless, allowed) {
-		return nil, errors.New("sandbox VLESS profile contains unsupported TLS, dialer or transport settings")
+		return nil, nil, errors.New("sandbox VLESS profile contains unsupported TLS, dialer or transport settings")
 	}
 	dnsAddress, err := sandboxRealityDNS(static.HiddifyOptions.RemoteDnsAddress)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return &sandbox.Policy{
 		Type: "vless", Server: vless.Server, ServerPort: vless.ServerPort,
 		DNSServer: dnsAddress, UUID: vless.UUID, Flow: vless.Flow,
 		ServerName: tls.ServerName, PublicKey: tls.Reality.PublicKey, ShortID: tls.Reality.ShortID,
 		Fingerprint: tls.UTLS.Fingerprint, PacketEncoding: "xudp", KeyShare: tls.Reality.KeyShare,
-	}, nil
+	}, &allowed, nil
 }
 
 // The worker's resolver uses TCP/53 through its only outbound. Accept that
@@ -336,11 +343,17 @@ func (p *sandboxProfile) selected() (*sandbox.Policy, verifiedRealityPeers, erro
 	if box == nil {
 		return nil, nil, errors.New("core is not running")
 	}
-	live, ok := box.Outbound().Outbound(tag)
+	manager := box.Outbound()
+	live, ok := manager.Outbound(tag)
 	if !ok || live.Type() != policy.Type {
 		return nil, nil, errors.New("the selected proxy does not match the running Reality exit")
 	}
 	if domain {
+		matcher, ok := manager.(verifiedRealityIdentity)
+		expected := p.domainConfigs[tag]
+		if !ok || expected == nil || !matcher.MatchesVerifiedRealityOutbound(live, *expected) {
+			return nil, nil, errors.New("the selected Reality profile does not match the installed outbound configuration")
+		}
 		source, ok := live.(verifiedRealityPeers)
 		if !ok {
 			return nil, nil, errors.New("the selected Reality exit cannot report a verified peer")

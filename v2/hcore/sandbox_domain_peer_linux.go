@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	"github.com/hiddify/hiddify-core/v2/hcore/sandbox"
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
 )
 
@@ -17,12 +18,22 @@ type verifiedRealityPeers interface {
 	WatchVerifiedRealityPeer(replay bool) (<-chan netip.AddrPort, func())
 }
 
+// A partial hot reload can leave a different configuration under the same tag.
+// The live manager verifies the installed object and its constructor options.
+type verifiedRealityIdentity interface {
+	MatchesVerifiedRealityOutbound(adapter.Outbound, option.VLESSOutboundOptions) bool
+}
+
 // A domain describes the foreground exit. Only a numeric policy from its
 // authenticated peer may cross the boundary into the worker.
-func sandboxProfileLeaf(outbound option.Outbound) (*sandbox.Policy, error) {
+func (p *sandboxProfile) leaf(tag string, outbound option.Outbound) (*sandbox.Policy, error) {
 	vless, ok := outbound.Options.(*option.VLESSOutboundOptions)
 	if static.HiddifyOptions != nil && outbound.Type == "vless" && ok && vless != nil && sandbox.IsRealityDomain(vless.Server) {
-		return sandboxRealityDefinition(outbound)
+		policy, expected, err := sandboxRealityDefinition(outbound)
+		if err == nil {
+			p.domainConfigs[tag] = expected
+		}
+		return policy, err
 	}
 	return sandboxLeaf(outbound)
 }

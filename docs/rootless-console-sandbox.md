@@ -126,6 +126,10 @@ that exact IP and configured port, with the profile's UUID, Reality key and TLS
 server name. The launcher performs no lookup or connection to bootstrap the
 hostname. The sealed CLI policy still requires a numeric proxy endpoint.
 
+The broker compares the saved profile with the configuration used to create the
+currently installed outbound. If a partial reload leaves a different endpoint,
+credential or TLS setting under the same tag, the application stays offline.
+
 The first publication of a newly started engine can accept its own connection
 established during startup. A selection or reload on the same engine requires a
 new confirmation after the change, even when the selected exit or IP matches
