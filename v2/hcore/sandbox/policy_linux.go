@@ -134,7 +134,7 @@ func validateRealityPolicy(policy *proxyPolicy) error {
 	if (policy.Flow != "" && policy.Flow != "xtls-rprx-vision") || policy.PacketEncoding != "xudp" {
 		return errors.New("sandbox VLESS supports empty or Vision flow with XUDP only")
 	}
-	if !validRealityServerName(policy.ServerName) {
+	if !IsRealityDomain(policy.ServerName) {
 		return errors.New("Reality requires an explicit ASCII DNS server name")
 	}
 	keyBytes, err := base64.RawURLEncoding.Strict().DecodeString(policy.PublicKey)
@@ -177,7 +177,8 @@ func validateRealityPolicy(policy *proxyPolicy) error {
 	return nil
 }
 
-func validRealityServerName(name string) bool {
+// IsRealityDomain accepts ASCII DNS names usable as a Reality endpoint or SNI.
+func IsRealityDomain(name string) bool {
 	if len(name) == 0 || len(name) > 253 {
 		return false
 	}
