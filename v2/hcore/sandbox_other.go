@@ -17,3 +17,7 @@ func sandboxEmergencyRevoke()                          {}
 func (s *CoreService) RunSandbox(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error {
 	return status.Error(codes.Unimplemented, "rootless sandbox is supported only on Linux")
 }
+
+func (s *CoreService) RunRendererApplication(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error {
+	return status.Error(codes.Unimplemented, "rootless renderer sandbox is supported only on Linux")
+}

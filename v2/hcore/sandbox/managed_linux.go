@@ -79,6 +79,7 @@ type ApplicationOptions struct {
 	ChromiumSandbox     bool
 	PrivateWayland      bool
 	SelectedApplication bool
+	RendererSandbox     bool
 }
 
 // Reexec arguments carry the validated layout. Directory descriptors stay in
@@ -87,6 +88,7 @@ type sessionLayout struct {
 	persistent bool
 	bundleRoot string
 	chromium   bool
+	renderer   bool
 	wayland    bool
 	generic    bool
 }
@@ -107,6 +109,10 @@ func systemProgram(path string) bool {
 func (layout sessionLayout) reexec(role string, command []string) *exec.Cmd {
 	mode := "__"
 	switch {
+	case layout.generic && layout.renderer && layout.wayland:
+		mode += "application_renderer_wayland_"
+	case layout.generic && layout.renderer:
+		mode += "application_renderer_"
 	case layout.generic && layout.wayland:
 		mode += "application_wayland_"
 	case layout.generic:
@@ -142,6 +148,9 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	}
 	if size > 64*1024 {
 		return nil, errors.New("sandbox command exceeds 64 KiB")
+	}
+	if options.RendererSandbox && !options.SelectedApplication {
+		return nil, errors.New("renderer sandbox requires RunRendererApplication")
 	}
 	if options.SelectedApplication {
 		if !validApplicationID(options.ID) {
@@ -223,7 +232,7 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	if err != nil {
 		return nil, err
 	}
-	layout := sessionLayout{persistent: storage != nil, bundleRoot: options.ExecutableRoot, chromium: options.ChromiumSandbox, wayland: options.PrivateWayland, generic: options.SelectedApplication}
+	layout := sessionLayout{persistent: storage != nil, bundleRoot: options.ExecutableRoot, chromium: options.ChromiumSandbox, wayland: options.PrivateWayland, generic: options.SelectedApplication, renderer: options.RendererSandbox}
 	process := layout.reexec("session", command)
 	files := []*os.File{statusWrite}
 	if storage != nil {
@@ -247,7 +256,7 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	// The guardian receives only the private listener, never the desktop socket.
 	var display *privateDisplay
 	if layout.wayland {
-		display, err = startPrivateDisplay(ctx)
+		display, err = startPrivateDisplay(ctx, layout.renderer)
 		if err == nil {
 			process.ExtraFiles = append(process.ExtraFiles, display.socket)
 		}
