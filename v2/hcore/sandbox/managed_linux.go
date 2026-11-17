@@ -256,7 +256,7 @@ func StartManagedWithOptions(ctx context.Context, command []string, workingDirec
 	// The guardian receives only the private listener, never the desktop socket.
 	var display *privateDisplay
 	if layout.wayland {
-		display, err = startPrivateDisplay(ctx)
+		display, err = startPrivateDisplay(ctx, layout.renderer)
 		if err == nil {
 			process.ExtraFiles = append(process.ExtraFiles, display.socket)
 		}

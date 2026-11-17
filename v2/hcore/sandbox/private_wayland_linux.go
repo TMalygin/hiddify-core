@@ -126,7 +126,7 @@ func openSystemWeston(ctx context.Context) (_ *os.File, resultErr error) {
 	return f, nil // bwrap mounts the validated O_PATH descriptor
 }
 
-func startPrivateDisplay(ctx context.Context) (_ *privateDisplay, resultErr error) {
+func startPrivateDisplay(ctx context.Context, renderer bool) (_ *privateDisplay, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -218,8 +218,14 @@ func startPrivateDisplay(ctx context.Context) (_ *privateDisplay, resultErr erro
 			return nil, err
 		}
 	}
+	width, height := "640", "480"
+	if renderer {
+		// Kiosk fullscreen must accommodate ordinary desktop window minima.
+		// This is only the initial output size, not a general resize policy.
+		width, height = "1280", "900"
+	}
 	cmd := exec.Command("/usr/bin/bwrap", append(args, "--", "/usr/bin/weston", "--backend=wayland", "--display=/run/parent/display",
-		"--width=640", "--height=480", "--renderer=pixman", "--shell=kiosk", "--socket="+privateWaylandSocket,
+		"--width="+width, "--height="+height, "--renderer=pixman", "--shell=kiosk", "--socket="+privateWaylandSocket,
 		"--idle-time=0", "--no-config")...)
 	cmd.Dir, cmd.Env, cmd.ExtraFiles = "/", cleanEnvironment, files
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
