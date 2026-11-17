@@ -48,7 +48,8 @@ func Run(args []string) int {
 	case "__session", "__stored_session":
 		code, err = managedSession(args[1:], sessionLayout{persistent: mode == "__stored_session"})
 	case "__bundled_child", "__bundled_session", "__chromium_child", "__chromium_session", "__wayland_child", "__wayland_session",
-		"__application_child", "__application_session", "__application_wayland_child", "__application_wayland_session":
+		"__application_child", "__application_session", "__application_wayland_child", "__application_wayland_session",
+		"__application_renderer_child", "__application_renderer_session", "__application_renderer_wayland_child", "__application_renderer_wayland_session":
 		if len(args) < 3 {
 			err = errors.New("missing bundle argument or application")
 			break
@@ -57,8 +58,9 @@ func Run(args []string) int {
 		layout := sessionLayout{
 			persistent: true, bundleRoot: args[1],
 			chromium: browserWindow || strings.HasPrefix(mode, "__chromium_"),
-			wayland:  browserWindow || strings.HasPrefix(mode, "__application_wayland_"),
+			wayland:  browserWindow || strings.HasPrefix(mode, "__application_wayland_") || strings.HasPrefix(mode, "__application_renderer_wayland_"),
 			generic:  strings.HasPrefix(mode, "__application_"),
+			renderer: strings.HasPrefix(mode, "__application_renderer_"),
 		}
 		if strings.HasSuffix(mode, "_child") {
 			code, err = child(args[2:], layout)
@@ -364,7 +366,7 @@ func child(command []string, layout sessionLayout) (int, error) {
 		"--setenv", "HOME", "/home/sandbox", "--ro-bind", "/usr", "/usr",
 		"--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/home/sandbox",
 		"--dir", "/etc", "--ro-bind-data", "3", "/etc/resolv.conf", "--chdir", "/home/sandbox"}
-	if layout.chromium {
+	if layout.chromium || layout.renderer {
 		// Keep PID-local uid_map/gid_map available to the zygote. The browser
 		// does not need any host kernel or network tuning interfaces.
 		for _, subtree := range []string{"/proc/sys", "/proc/irq", "/proc/bus"} {
@@ -406,6 +408,11 @@ func child(command []string, layout sessionLayout) (int, error) {
 		firstPrivateFD++
 		if layout.chromium {
 			command = append([]string{command[0], "--ozone-platform=wayland"}, command[1:]...)
+		}
+		if layout.renderer {
+			// Applications and shell children can detect this private Wayland
+			// session without inserting browser-specific switches into argv.
+			args = append(args, "--setenv", "XDG_SESSION_TYPE", "wayland")
 		}
 	}
 	args, err = appendSystemLibraryMounts(args)

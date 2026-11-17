@@ -7,6 +7,9 @@ Changelog
 
 New
 ~~~
+- Add an explicit RunRendererApplication RPC for chosen programs and shell
+  commands that need their own nested renderer sandbox. Preserve the existing
+  proxy-only network, private storage, display and outer seccomp policy.
 - Allow isolated Linux applications to use an unambiguous VLESS/Reality
   profile with Hiddify's default Clash controller and numeric TCP DNS.
   Report the reason when an active profile leaves an application offline.

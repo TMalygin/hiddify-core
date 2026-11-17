@@ -65,6 +65,10 @@ service Core {
   // with a private application_id and optional private_wayland display.
   // Supports installed programs and a single user-selected standalone file.
   rpc RunApplication (SandboxRunRequest) returns (stream SandboxEvent);
+  // Explicitly allow the application's own nested renderer sandbox. Retains
+  // RunApplication's filesystem/proxy isolation and exact argv. Other platforms
+  // and older cores report Unimplemented instead of falling back to ordinary mode.
+  rpc RunRendererApplication (SandboxRunRequest) returns (stream SandboxEvent);
 }
 
 

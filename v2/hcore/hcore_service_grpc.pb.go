@@ -20,38 +20,39 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Core_Start_FullMethodName                 = "/hcore.Core/Start"
-	Core_CoreInfoListener_FullMethodName      = "/hcore.Core/CoreInfoListener"
-	Core_OutboundsInfo_FullMethodName         = "/hcore.Core/OutboundsInfo"
-	Core_MainOutboundsInfo_FullMethodName     = "/hcore.Core/MainOutboundsInfo"
-	Core_GetSystemInfo_FullMethodName         = "/hcore.Core/GetSystemInfo"
-	Core_GetSystemInfoStream_FullMethodName   = "/hcore.Core/GetSystemInfoStream"
-	Core_Setup_FullMethodName                 = "/hcore.Core/Setup"
-	Core_Parse_FullMethodName                 = "/hcore.Core/Parse"
-	Core_ChangeHiddifySettings_FullMethodName = "/hcore.Core/ChangeHiddifySettings"
-	Core_StartService_FullMethodName          = "/hcore.Core/StartService"
-	Core_Stop_FullMethodName                  = "/hcore.Core/Stop"
-	Core_Restart_FullMethodName               = "/hcore.Core/Restart"
-	Core_HotReload_FullMethodName             = "/hcore.Core/HotReload"
-	Core_SelectOutbound_FullMethodName        = "/hcore.Core/SelectOutbound"
-	Core_UrlTest_FullMethodName               = "/hcore.Core/UrlTest"
-	Core_UrlTestActive_FullMethodName         = "/hcore.Core/UrlTestActive"
-	Core_UploadTest_FullMethodName            = "/hcore.Core/UploadTest"
-	Core_DownloadTest_FullMethodName          = "/hcore.Core/DownloadTest"
-	Core_ClearSpeedTests_FullMethodName       = "/hcore.Core/ClearSpeedTests"
-	Core_GenerateWarpConfig_FullMethodName    = "/hcore.Core/GenerateWarpConfig"
-	Core_GetSystemProxyStatus_FullMethodName  = "/hcore.Core/GetSystemProxyStatus"
-	Core_SetSystemProxyEnabled_FullMethodName = "/hcore.Core/SetSystemProxyEnabled"
-	Core_LogListener_FullMethodName           = "/hcore.Core/LogListener"
-	Core_Close_FullMethodName                 = "/hcore.Core/Close"
-	Core_GetLANIP_FullMethodName              = "/hcore.Core/GetLANIP"
-	Core_IsAdmin_FullMethodName               = "/hcore.Core/IsAdmin"
-	Core_NeedAdminBgService_FullMethodName    = "/hcore.Core/NeedAdminBgService"
-	Core_EnsureAdminBgService_FullMethodName  = "/hcore.Core/EnsureAdminBgService"
-	Core_ListCrashReports_FullMethodName      = "/hcore.Core/ListCrashReports"
-	Core_ExportDiagnostics_FullMethodName     = "/hcore.Core/ExportDiagnostics"
-	Core_RunSandbox_FullMethodName            = "/hcore.Core/RunSandbox"
-	Core_RunApplication_FullMethodName        = "/hcore.Core/RunApplication"
+	Core_Start_FullMethodName                  = "/hcore.Core/Start"
+	Core_CoreInfoListener_FullMethodName       = "/hcore.Core/CoreInfoListener"
+	Core_OutboundsInfo_FullMethodName          = "/hcore.Core/OutboundsInfo"
+	Core_MainOutboundsInfo_FullMethodName      = "/hcore.Core/MainOutboundsInfo"
+	Core_GetSystemInfo_FullMethodName          = "/hcore.Core/GetSystemInfo"
+	Core_GetSystemInfoStream_FullMethodName    = "/hcore.Core/GetSystemInfoStream"
+	Core_Setup_FullMethodName                  = "/hcore.Core/Setup"
+	Core_Parse_FullMethodName                  = "/hcore.Core/Parse"
+	Core_ChangeHiddifySettings_FullMethodName  = "/hcore.Core/ChangeHiddifySettings"
+	Core_StartService_FullMethodName           = "/hcore.Core/StartService"
+	Core_Stop_FullMethodName                   = "/hcore.Core/Stop"
+	Core_Restart_FullMethodName                = "/hcore.Core/Restart"
+	Core_HotReload_FullMethodName              = "/hcore.Core/HotReload"
+	Core_SelectOutbound_FullMethodName         = "/hcore.Core/SelectOutbound"
+	Core_UrlTest_FullMethodName                = "/hcore.Core/UrlTest"
+	Core_UrlTestActive_FullMethodName          = "/hcore.Core/UrlTestActive"
+	Core_UploadTest_FullMethodName             = "/hcore.Core/UploadTest"
+	Core_DownloadTest_FullMethodName           = "/hcore.Core/DownloadTest"
+	Core_ClearSpeedTests_FullMethodName        = "/hcore.Core/ClearSpeedTests"
+	Core_GenerateWarpConfig_FullMethodName     = "/hcore.Core/GenerateWarpConfig"
+	Core_GetSystemProxyStatus_FullMethodName   = "/hcore.Core/GetSystemProxyStatus"
+	Core_SetSystemProxyEnabled_FullMethodName  = "/hcore.Core/SetSystemProxyEnabled"
+	Core_LogListener_FullMethodName            = "/hcore.Core/LogListener"
+	Core_Close_FullMethodName                  = "/hcore.Core/Close"
+	Core_GetLANIP_FullMethodName               = "/hcore.Core/GetLANIP"
+	Core_IsAdmin_FullMethodName                = "/hcore.Core/IsAdmin"
+	Core_NeedAdminBgService_FullMethodName     = "/hcore.Core/NeedAdminBgService"
+	Core_EnsureAdminBgService_FullMethodName   = "/hcore.Core/EnsureAdminBgService"
+	Core_ListCrashReports_FullMethodName       = "/hcore.Core/ListCrashReports"
+	Core_ExportDiagnostics_FullMethodName      = "/hcore.Core/ExportDiagnostics"
+	Core_RunSandbox_FullMethodName             = "/hcore.Core/RunSandbox"
+	Core_RunApplication_FullMethodName         = "/hcore.Core/RunApplication"
+	Core_RunRendererApplication_FullMethodName = "/hcore.Core/RunRendererApplication"
 )
 
 // CoreClient is the client API for Core service.
@@ -116,6 +117,10 @@ type CoreClient interface {
 	// with a private application_id and optional private_wayland display.
 	// Supports installed programs and a single user-selected standalone file.
 	RunApplication(ctx context.Context, in *SandboxRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SandboxEvent], error)
+	// Explicitly allow the application's own nested renderer sandbox. Retains
+	// RunApplication's filesystem/proxy isolation and exact argv. Other platforms
+	// and older cores report Unimplemented instead of falling back to ordinary mode.
+	RunRendererApplication(ctx context.Context, in *SandboxRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SandboxEvent], error)
 }
 
 type coreClient struct {
@@ -518,6 +523,25 @@ func (c *coreClient) RunApplication(ctx context.Context, in *SandboxRunRequest, 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Core_RunApplicationClient = grpc.ServerStreamingClient[SandboxEvent]
 
+func (c *coreClient) RunRendererApplication(ctx context.Context, in *SandboxRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SandboxEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Core_ServiceDesc.Streams[8], Core_RunRendererApplication_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SandboxRunRequest, SandboxEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Core_RunRendererApplicationClient = grpc.ServerStreamingClient[SandboxEvent]
+
 // CoreServer is the server API for Core service.
 // All implementations must embed UnimplementedCoreServer
 // for forward compatibility.
@@ -580,6 +604,10 @@ type CoreServer interface {
 	// with a private application_id and optional private_wayland display.
 	// Supports installed programs and a single user-selected standalone file.
 	RunApplication(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error
+	// Explicitly allow the application's own nested renderer sandbox. Retains
+	// RunApplication's filesystem/proxy isolation and exact argv. Other platforms
+	// and older cores report Unimplemented instead of falling back to ordinary mode.
+	RunRendererApplication(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error
 	mustEmbedUnimplementedCoreServer()
 }
 
@@ -685,6 +713,9 @@ func (UnimplementedCoreServer) RunSandbox(*SandboxRunRequest, grpc.ServerStreami
 }
 func (UnimplementedCoreServer) RunApplication(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error {
 	return status.Errorf(codes.Unimplemented, "method RunApplication not implemented")
+}
+func (UnimplementedCoreServer) RunRendererApplication(*SandboxRunRequest, grpc.ServerStreamingServer[SandboxEvent]) error {
+	return status.Errorf(codes.Unimplemented, "method RunRendererApplication not implemented")
 }
 func (UnimplementedCoreServer) mustEmbedUnimplementedCoreServer() {}
 func (UnimplementedCoreServer) testEmbeddedByValue()              {}
@@ -1227,6 +1258,17 @@ func _Core_RunApplication_Handler(srv interface{}, stream grpc.ServerStream) err
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Core_RunApplicationServer = grpc.ServerStreamingServer[SandboxEvent]
 
+func _Core_RunRendererApplication_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SandboxRunRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(CoreServer).RunRendererApplication(m, &grpc.GenericServerStream[SandboxRunRequest, SandboxEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Core_RunRendererApplicationServer = grpc.ServerStreamingServer[SandboxEvent]
+
 // Core_ServiceDesc is the grpc.ServiceDesc for Core service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1370,6 +1412,11 @@ var Core_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "RunApplication",
 			Handler:       _Core_RunApplication_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "RunRendererApplication",
+			Handler:       _Core_RunRendererApplication_Handler,
 			ServerStreams: true,
 		},
 	},

@@ -60,7 +60,7 @@ func managedSession(args []string, layout sessionLayout) (int, error) {
 		return 1, err
 	}
 	defer resolver.Close()
-	filter, err := applicationFilter(layout.chromium)
+	filter, err := applicationFilter(layout.chromium || layout.renderer)
 	if err != nil {
 		return 1, err
 	}
